@@ -7268,7 +7268,10 @@
         if (!roomCode) return;
         const updateData = { gs: newGs };
         if (newPhase) updateData.phase = newPhase;
-        db.ref(`rooms/${roomCode}`).update(updateData);
+        db.ref(`rooms/${roomCode}`).update(updateData).catch(err => {
+          console.error("Firebase Update Error:", err);
+          alert("Error al sincronizar con el servidor: " + err.message);
+        });
       };
 
       // --- Lobby & Setup ---
@@ -7320,40 +7323,41 @@
 
       // --- Multiplayer Actions ---
       const nextSituation = () => {
-        console.log("Attempting nextSituation. isHost:", isHost, "curSit:", gs.curSit, "isGameOver:", gs.isGameOver);
-        if (!isHost || gs.curSit || gs.isGameOver) {
-          console.warn("nextSituation aborted: ", { isHost, hasSit: !!gs.curSit, isGameOver: gs.isGameOver });
-          return;
-        }
-
+        if (!isHost || gs.curSit || gs.isGameOver) return;
         const situations = EXTERNAL_DATA.SITUATIONS;
-        if (!situations || situations.length === 0) {
-          console.error("No situations found in EXTERNAL_DATA");
-          return;
-        }
+        if (!situations || situations.length === 0) return alert("No hay situaciones!");
 
         const s = situations[Math.floor(Math.random() * situations.length)];
-        console.log("Picked situation:", s.id);
-
         const order = Array.from({ length: gs.players.length }).map((_, i) => (gs.ownerIdx + i) % gs.players.length);
-        const newGs = {
-          ...gs,
-          curSit: s,
-          votes: {},
-          voterQueue: order,
-          currentVoterPos: 0,
-          logs: [`Nueva Situación: ${s.id}`, ...gs.logs]
-        };
-        setGs(newGs);
-        updateRemote(newGs);
+
+        setGs(prev => {
+          const updatedGs = {
+            ...prev,
+            curSit: s,
+            votes: {},
+            voterQueue: order,
+            currentVoterPos: 0,
+            logs: [`Nueva Situación: ${s.id}`, ...prev.logs]
+          };
+          updateRemote(updatedGs);
+          return updatedGs;
+        });
       };
 
       const castVote = (optIdx) => {
         const voterIdx = gs.voterQueue[gs.currentVoterPos];
         if (voterIdx !== playerId && gs.players[voterIdx].isHuman) return;
-        const isLastVoter = gs.currentVoterPos === gs.voterQueue.length - 1;
-        const newGs = { ...gs, votes: { ...gs.votes, [voterIdx]: optIdx }, currentVoterPos: isLastVoter ? gs.currentVoterPos : gs.currentVoterPos + 1 };
-        setGs(newGs); updateRemote(newGs);
+
+        setGs(prev => {
+          const isLastVoter = prev.currentVoterPos === prev.voterQueue.length - 1;
+          const updatedGs = {
+            ...prev,
+            votes: { ...prev.votes, [voterIdx]: optIdx },
+            currentVoterPos: isLastVoter ? prev.currentVoterPos : prev.currentVoterPos + 1
+          };
+          updateRemote(updatedGs);
+          return updatedGs;
+        });
       };
 
       const finalizeVote = () => {
