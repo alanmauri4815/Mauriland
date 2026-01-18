@@ -7213,6 +7213,19 @@
         gameOverReason: null
       });
 
+      const resetGame = () => {
+        if (isHost && roomCode) {
+          // Si es host, reiniciamos la sala en Firebase
+          db.ref(`rooms/${roomCode}`).remove().then(() => {
+            sessionStorage.clear();
+            window.location.reload();
+          });
+        } else {
+          sessionStorage.clear();
+          window.location.reload();
+        }
+      };
+
       // --- Firebase Sync ---
       useEffect(() => {
         if (!roomCode) return;
@@ -7229,6 +7242,26 @@
         roomRef.on('value', handleUpdate);
         return () => roomRef.off('value', handleUpdate);
       }, [roomCode]);
+
+      // Persistence to survive reloads
+      useEffect(() => {
+        const savedRoom = sessionStorage.getItem('mauriland_room');
+        const savedHost = sessionStorage.getItem('mauriland_isHost');
+        const savedPid = sessionStorage.getItem('mauriland_playerId');
+        if (savedRoom) {
+          setRoomCode(savedRoom);
+          setIsHost(savedHost === 'true');
+          setPlayerId(parseInt(savedPid));
+        }
+      }, []);
+
+      useEffect(() => {
+        if (roomCode) {
+          sessionStorage.setItem('mauriland_room', roomCode);
+          sessionStorage.setItem('mauriland_isHost', isHost);
+          sessionStorage.setItem('mauriland_playerId', playerId);
+        }
+      }, [roomCode, isHost, playerId]);
 
       const updateRemote = (newGs, newPhase = null) => {
         if (!roomCode) return;
@@ -7289,8 +7322,16 @@
         if (!isHost || gs.curSit || gs.isGameOver) return;
         const s = EXTERNAL_DATA.SITUATIONS[Math.floor(Math.random() * EXTERNAL_DATA.SITUATIONS.length)];
         const order = Array.from({ length: gs.players.length }).map((_, i) => (gs.ownerIdx + i) % gs.players.length);
-        const newGs = { ...gs, curSit: s, votes: {}, voterQueue: order, currentVoterPos: 0, logs: [`Nueva Situación: ${s.id}`, ...gs.logs] };
-        setGs(newGs); updateRemote(newGs);
+        const newGs = {
+          ...gs,
+          curSit: s,
+          votes: {},
+          voterQueue: order,
+          currentVoterPos: 0,
+          logs: [`Nueva Situación: ${s.id}`, ...gs.logs]
+        };
+        setGs(newGs);
+        updateRemote(newGs);
       };
 
       const castVote = (optIdx) => {
@@ -7483,8 +7524,8 @@
             {phase === 'playing' && (
               <>
                 {tab === 'players' && <TabPlayers gs={gs} />}
-                {tab === 'dashboard' && <TabDashboard gs={gs} nextSituation={nextSituation} resetGame={() => window.location.reload()} setTab={setTab} isHost={isHost} />}
-                {tab === 'parliament' && <TabParliament gs={gs} castVote={castVote} finalizeVote={finalizeVote} isHost={isHost} playerId={playerId} />}
+                {tab === 'dashboard' && <TabDashboard gs={gs} nextSituation={nextSituation} resetGame={resetGame} setTab={setTab} isHost={isHost} />}
+                {tab === 'parliament' && <TabParliament gs={gs} castVote={castVote} finalizeVote={finalizeVote} closeResults={closeResults} isHost={isHost} playerId={playerId} setTab={setTab} nextSituation={nextSituation} />}
                 {tab === 'logs' && <TabLogs gs={gs} />}
               </>
             )}
@@ -7676,7 +7717,7 @@
       );
     }
 
-    function TabDashboard({ gs, nextSituation, resetGame, setTab }) {
+    function TabDashboard({ gs, nextSituation, resetGame, setTab, isHost }) {
       const owner = gs.players[gs.ownerIdx];
       // Recuperar la situación fresca de EXTERNAL_DATA para asegurar que la URL de la imagen esté actualizada
       // y no sea un dato obsoleto del localStorage
@@ -7740,7 +7781,7 @@
                     </p>
                     <div className="flex space-x-3 pt-2">
                       <button onClick={() => setTab('parliament')} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-8 py-4 rounded-2xl shadow-xl shadow-blue-900/40 transition-all active:scale-95 uppercase text-[13px] tracking-widest">Ir a Votación</button>
-                      <button onClick={resetGame} className="bg-white/5 border border-white/10 text-slate-500 font-bold px-6 py-4 rounded-2xl transition-all uppercase text-[13px] tracking-widest hover:bg-red-500/20 hover:text-red-400">Reiniciar</button>
+                      {isHost && <button onClick={resetGame} className="bg-white/5 border border-white/10 text-slate-500 font-bold px-6 py-4 rounded-2xl transition-all uppercase text-[13px] tracking-widest hover:bg-red-500/20 hover:text-red-400">Reiniciar</button>}
                     </div>
                   </div>
                 </>
@@ -7751,8 +7792,16 @@
                     <h2 className="text-6xl font-bold tracking-tight">Estado de la <span className="gradient-text">Unión</span></h2>
                   </div>
                   <div className="flex space-x-4">
-                    <button onClick={nextSituation} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-10 py-5 rounded-2xl shadow-xl shadow-blue-900/40 transition-all active:scale-95 uppercase text-[13px] tracking-widest">Abrir Nueva Sesión</button>
-                    <button onClick={resetGame} className="bg-red-500/10 border border-red-500/20 text-red-500 font-bold px-10 py-5 rounded-2xl transition-all uppercase text-[13px] tracking-widest hover:bg-red-500 hover:text-white">Reiniciar Partida</button>
+                    {isHost ? (
+                      <>
+                        <button onClick={nextSituation} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-10 py-5 rounded-2xl shadow-xl shadow-blue-900/40 transition-all active:scale-95 uppercase text-[13px] tracking-widest">Abrir Nueva Sesión</button>
+                        <button onClick={resetGame} className="bg-red-500/10 border border-red-500/20 text-red-500 font-bold px-10 py-5 rounded-2xl transition-all uppercase text-[13px] tracking-widest hover:bg-red-500 hover:text-white">Reiniciar Partida</button>
+                      </>
+                    ) : (
+                      <div className="bg-blue-500/10 border border-blue-500/20 p-6 rounded-2xl">
+                        <p className="text-blue-400 font-black uppercase text-xs tracking-widest animate-pulse italic">Esperando que el Presidente abra la sesión...</p>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -7788,7 +7837,7 @@
       );
     }
 
-    function TabParliament({ gs, castVote, finalizeVote, offerPrebenda, closeResults, submitNegotiation, setGs, setTab, nextSituation }) {
+    function TabParliament({ gs, castVote, finalizeVote, closeResults, isHost, playerId, setTab, nextSituation }) {
       const currentVoterIdx = gs.voterQueue[gs.currentVoterPos];
       const currentVoter = gs.players[currentVoterIdx];
       const isAllVoted = Object.keys(gs.votes).length === gs.players.length;
