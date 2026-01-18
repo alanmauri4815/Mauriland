@@ -13,6 +13,8 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
   <style>
     :root {
       --bg-dark: #0a0b10;
@@ -7163,10 +7165,30 @@
       </div>
     );
 
+    const firebaseConfig = {
+      apiKey: "AIzaSyCY4GiJ34tN5jE5_LaniPAYPw16YfFYO6Y",
+      authDomain: "mauriland-74476.firebaseapp.com",
+      databaseURL: "https://mauriland-74476-default-rtdb.firebaseio.com/",
+      projectId: "mauriland-74476",
+      storageBucket: "mauriland-74476.firebasestorage.app",
+      messagingSenderId: "249798957747",
+      appId: "1:249798957747:web:dd1a847e878c6ca7b16ec6"
+    };
+
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+    const db = firebase.database();
+
     function App() {
-      const [phase, setPhase] = useState('setup'); // setup, assignment, playing
+      const [phase, setPhase] = useState('lobby'); // lobby, setup, setup-details, assignment, playing
       const [tab, setTab] = useState('dashboard');
       const [numPlayers, setNumPlayers] = useState(4);
+      const [roomCode, setRoomCode] = useState(null);
+      const [isHost, setIsHost] = useState(false);
+      const [playerId, setPlayerId] = useState(null);
+      const [joinCode, setJoinCode] = useState('');
+
       const [gs, setGs] = useState({
         turn: 1, budget: 600, history: [],
         tension: 0, media: 5.0,
@@ -7182,916 +7204,296 @@
         showResults: false, lastResults: null,
         showElection: false, electionData: null,
         logs: [],
-        pacts: [], // Historial de pactos (cumplidos/rotos)
-        activeAgreements: [], // Acuerdos pendientes para la situación actual
+        pacts: [],
+        activeAgreements: [],
         isAiProcessing: false,
-        difficulty: 'Medio', // Fácil, Medio, Difícil
+        difficulty: 'Medio',
         hasRequestedRescue: false,
         isGameOver: false,
         gameOverReason: null
       });
 
-      // Persistencia
+      // --- Firebase Sync ---
       useEffect(() => {
-        const saved = localStorage.getItem('mauriland_save');
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved);
-            if (!parsed.gs.logs) parsed.gs.logs = [];
-            setGs(parsed.gs);
-            setPhase(parsed.phase);
-            setTab(parsed.tab);
-          } catch (e) { console.error("Error loading save", e); }
-        }
-      }, []);
+        if (!roomCode) return;
+        const roomRef = db.ref(`rooms/${roomCode}`);
 
+        const handleUpdate = (snapshot) => {
+          const data = snapshot.val();
+          if (data && data.gs) {
+            setGs(data.gs);
+            if (data.phase) setPhase(data.phase);
+          }
+        };
 
-      useEffect(() => {
-        if (phase === 'playing') {
-          localStorage.setItem('mauriland_save', JSON.stringify({ gs, phase, tab }));
-        }
-      }, [gs, phase, tab]);
+        roomRef.on('value', handleUpdate);
+        return () => roomRef.off('value', handleUpdate);
+      }, [roomCode]);
 
-      const resetGame = () => {
-        if (confirm("¿Estás seguro de reiniciar la partida? Se perderá todo el progreso.")) {
-          localStorage.removeItem('mauriland_save');
-          window.location.reload();
-        }
+      const updateRemote = (newGs, newPhase = null) => {
+        if (!roomCode) return;
+        const updateData = { gs: newGs };
+        if (newPhase) updateData.phase = newPhase;
+        db.ref(`rooms/${roomCode}`).update(updateData);
       };
 
-      // --- Setup Logic ---
+      // --- Lobby & Setup ---
+      const createRoom = () => {
+        const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+        const initialPlayer = { id: 0, name: "Anfitrión", isHuman: true, isHost: true };
+        const initialGs = { ...gs, players: [initialPlayer] };
+        setRoomCode(code); setIsHost(true); setPlayerId(0);
+        db.ref(`rooms/${code}`).set({ gs: initialGs, phase: 'setup' });
+        setPhase('setup');
+      };
+
+      const joinRoom = (code) => {
+        const c = code.toUpperCase();
+        db.ref(`rooms/${c}`).once('value', snapshot => {
+          const data = snapshot.val();
+          if (!data || data.phase !== 'setup') return alert("Sala no disponible.");
+          const newId = data.gs.players.length;
+          const updatedPlayers = [...data.gs.players, { id: newId, name: `Jugador ${newId + 1}`, isHuman: true, isHost: false }];
+          const updatedGs = { ...data.gs, players: updatedPlayers };
+          setRoomCode(c); setIsHost(false); setPlayerId(newId);
+          db.ref(`rooms/${c}`).update({ gs: updatedGs });
+          setPhase('setup');
+        });
+      };
+
       const startSetup = () => {
-        const initialPlayers = Array.from({ length: numPlayers }).map((_, i) => ({
-          id: i, name: i === 0 ? "Jugador 1" : `IA ${i + 1}`, isAI: i !== 0
-        }));
-        setGs(p => ({ ...p, players: initialPlayers }));
-        setPhase('setup-details');
+        if (!isHost) return;
+        const currentHumans = gs.players.filter(p => !p.isAI);
+        const players = [...currentHumans];
+        for (let i = players.length; i < numPlayers; i++) {
+          players.push({ id: i, name: `IA ${i + 1}`, isHuman: false, isAI: true });
+        }
+        const newGs = { ...gs, players };
+        setGs(newGs); updateRemote(newGs, 'setup-details');
       };
 
       const finalizeSetup = () => {
+        if (!isHost) return;
         const partyNames = Object.keys(EXTERNAL_DATA.PARTIES);
-        const shuffledParties = [...partyNames].sort(() => 0.5 - Math.random());
-        const colors = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6", "#06b6d4", "#f43f5e", "#14b8a6", "#d946ef"];
-
+        const shuffled = [...partyNames].sort(() => 0.5 - Math.random());
+        const colors = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6", "#06b6d4"];
         const updatedPlayers = gs.players.map((p, i) => ({
-          ...p,
-          party: shuffledParties[i % shuffledParties.length],
-          op: 50, ap: 50, seats: 20, loyalty: 70, color: colors[i % colors.length]
+          ...p, party: shuffled[i % shuffled.length], op: 50, ap: 50, seats: 20, loyalty: 70, color: colors[i % colors.length]
         }));
-
-        setGs(p => ({ ...p, players: updatedPlayers }));
-        setPhase('assignment');
+        const newGs = { ...gs, players: updatedPlayers };
+        setGs(newGs); updateRemote(newGs, 'assignment');
       };
 
-      // --- Game Logic ---
+      // --- Multiplayer Actions ---
       const nextSituation = () => {
-        if (gs.isGameOver) return;
-        if (gs.curSit) return; // Ya hay una situación (ej: rescate)
-
+        if (!isHost || gs.curSit || gs.isGameOver) return;
         const s = EXTERNAL_DATA.SITUATIONS[Math.floor(Math.random() * EXTERNAL_DATA.SITUATIONS.length)];
-        // Create order: Starting from ownerIdx, wrap around
-        const order = [];
-        for (let i = 0; i < gs.players.length; i++) {
-          order.push((gs.ownerIdx + i) % gs.players.length);
-        }
-
-        setGs(p => ({
-          ...p,
-          curSit: s,
-          votes: {},
-          negotiating: false,
-          pendingPact: null,
-          activeAgreements: [],
-          voterQueue: order,
-          currentVoterPos: 0,
-          logs: [`Nueva Situación: ${s.id} (Inicia ${p.players[p.ownerIdx].name})`, ...p.logs]
-        }));
+        const order = Array.from({ length: gs.players.length }).map((_, i) => (gs.ownerIdx + i) % gs.players.length);
+        const newGs = { ...gs, curSit: s, votes: {}, voterQueue: order, currentVoterPos: 0, logs: [`Nueva Situación: ${s.id}`, ...gs.logs] };
+        setGs(newGs); updateRemote(newGs);
       };
 
       const castVote = (optIdx) => {
         const voterIdx = gs.voterQueue[gs.currentVoterPos];
+        if (voterIdx !== playerId && gs.players[voterIdx].isHuman) return;
         const isLastVoter = gs.currentVoterPos === gs.voterQueue.length - 1;
-
-        setGs(p => ({
-          ...p,
-          votes: { ...p.votes, [voterIdx]: optIdx },
-          currentVoterPos: isLastVoter ? p.currentVoterPos : p.currentVoterPos + 1
-        }));
+        const newGs = { ...gs, votes: { ...gs.votes, [voterIdx]: optIdx }, currentVoterPos: isLastVoter ? gs.currentVoterPos : gs.currentVoterPos + 1 };
+        setGs(newGs); updateRemote(newGs);
       };
 
-      const offerPrebenda = (voterIdx) => {
-        const cost = 50;
-        if (gs.budget < cost) {
-          alert("Presupuesto insuficiente.");
-          return;
-        }
-        setGs(p => {
-          const newPlayers = [...p.players];
-          newPlayers[voterIdx] = {
-            ...newPlayers[voterIdx],
-            loyalty: Math.min(100, newPlayers[voterIdx].loyalty + 15)
-          };
-          const newAgreement = {
-            promisorIdx: voterIdx,
-            promisorName: newPlayers[voterIdx].name,
-            beneficiaryIdx: p.ownerIdx,
-            beneficiaryName: p.players[p.ownerIdx].name,
-            type: 'Prebenda',
-            detail: `Garantizar lealtad (+15%)`,
-            status: 'Cumplido',
-            turnCreated: p.turn,
-            turnResolved: p.turn,
-            cost: cost
-          };
-          return {
-            ...p,
-            budget: p.budget - cost,
-            players: newPlayers,
-            activeAgreements: [...p.activeAgreements, newAgreement],
-            logs: [`Negociación: Se han ofrecido prebendas a ${newPlayers[voterIdx].name} (-$${cost}M, +15% Lealtad)`, ...p.logs]
-          };
-        });
-      };
+      const finalizeVote = () => {
+        if (!isHost) return;
+        const options = gs.curSit.options;
+        const totalSeats = gs.players.reduce((sum, p) => sum + p.seats, 0);
+        const tally = options.map(() => 0);
+        Object.entries(gs.votes).forEach(([pIdx, optIdx]) => { tally[optIdx] += gs.players[pIdx].seats; });
 
-      const evaluateOptionOutcome = (playerIdx, opt, budget, sectors, players, tension) => {
-        if (!opt) return null;
-        const player = players[playerIdx];
-        const SECTOR_UNIT = 10;
+        const winIdx = tally.findIndex(v => v >= totalSeats * 0.4);
+        const winOpt = options[winIdx] || { text: "Ley Archivada", cost: 0, sector: {}, party: {} };
 
-        // Simulación de presupuesto y sectores
-        const newBudget = budget - opt.cost;
-        const weightedImpact = sectors.reduce((acc, s) => {
-          const effect = opt.sector?.[s.name] || 0;
-          return acc + (effect * (s.weight || 1));
-        }, 0);
+        let newGs = {
+          ...gs, budget: gs.budget - (winOpt.cost || 0), showResults: true,
+          lastResults: { winner: winOpt.text, winnerIdx: winIdx + 1, percent: (tally[winIdx] / totalSeats) * 100 }
+        };
 
-        // Simulación de jugadores
-        const simulatedPlayers = players.map((pl, idx) => {
-          const partyEffect = opt.party?.[pl.party] || 0;
-          const isOwner = idx === playerIdx; // Simplificación: asumimos que el evaluador es el owner para la simulación de OP
-          const newAP = Math.max(0, Math.min(1000, pl.ap + partyEffect));
-          const newOP = isOwner ? Math.max(0, Math.min(1000, pl.op + (weightedImpact * 0.5))) : pl.op;
-
-          // Estimación de escaños (proporcional a OP)
-          // Nota: Esta es una simplificación rápida para la IA
-          return { ...pl, ap: newAP, op: newOP };
-        });
-
-        // Tensión
-        const totalDev = sectors.reduce((acc, s) => acc + Math.abs((s.value + (opt.sector?.[s.name] || 0) * SECTOR_UNIT) - 500), 0);
-        const newTension = (totalDev / (sectors.length * 500)) * 100;
-
-        return { players: simulatedPlayers, budget: newBudget, tension: newTension, weightedImpact };
-      };
-
-      const calculateStrategicScore = (playerIdx, outcome) => {
-        if (!outcome) return -9999;
-        const me = outcome.players[playerIdx];
-
-        // 1. Mi propio beneficio (AP + OP)
-        let score = (me.ap * 1.5) + (me.op * 2);
-
-        // 2. Penalización por presupuesto bajo
-        if (outcome.budget < 100) score -= (100 - outcome.budget) * 5;
-
-        // 3. Penalización por alta tensión
-        if (outcome.tension > 30) score -= (outcome.tension - 30) * 10;
-
-        // 4. Comparación con rivales (Queremos maximizar la brecha)
-        let competitorsAvgBenefit = 0;
-        outcome.players.forEach((pl, idx) => {
-          if (idx !== playerIdx) {
-            competitorsAvgBenefit += (pl.ap * 0.8) + (pl.op * 1.2);
-          }
-        });
-        competitorsAvgBenefit /= (outcome.players.length - 1);
-
-        // El score final es mi ventaja sobre el promedio de los demás
-        return score - competitorsAvgBenefit;
-      };
-
-      const calculateOptionScoreAI = (playerIdx, opt, budget, sectors, players, tension) => {
-        const outcome = evaluateOptionOutcome(playerIdx, opt, budget, sectors, players, tension);
-        return calculateStrategicScore(playerIdx, outcome);
-      };
-
-      const calculateBestOptionAI = (playerIdx, sit, gs) => {
-        const options = sit.options;
-        const player = gs.players[playerIdx];
-        const difficulty = gs.difficulty || 'Medio';
-
-        // Determinar precisión según nivel
-        let precision = 0.8; // Default Medio
-        if (difficulty === 'Fácil') precision = 0.5 + (Math.random() * 0.2); // 50-70%
-        if (difficulty === 'Medio') precision = 0.7 + (Math.random() * 0.2); // 70-90%
-        if (difficulty === 'Difícil') precision = 0.9 + (Math.random() * 0.1); // 90-100%
-
-        const isPrecise = Math.random() < precision;
-
-        if (!isPrecise) {
-          // Error estratégico: Opción aleatoria
-          return Math.floor(Math.random() * options.length);
+        if (newGs.budget <= 0) {
+          newGs.isGameOver = true;
+          newGs.gameOverReason = "Bancarrota Nacional.";
+        } else if (gs.turn >= 12) {
+          newGs.isGameOver = true;
+          newGs.gameOverReason = "Fin de Legislatura.";
         }
 
-        // Decisión Inteligente: Simular todas y elegir la mejor
-        let bestOptIdx = 0;
-        let maxStrategicScore = -999999;
-
-        options.forEach((opt, idx) => {
-          const score = calculateOptionScoreAI(playerIdx, opt, gs.budget, gs.sectors, gs.players, gs.tension);
-          if (score > maxStrategicScore) {
-            maxStrategicScore = score;
-            bestOptIdx = idx;
-          }
-        });
-
-        return bestOptIdx;
-      };
-
-      const submitNegotiation = () => {
-        setGs(p => {
-          const contentingOpts = p.topOptions.map(([idx]) => parseInt(idx));
-          const finalCounts = contentingOpts.reduce((acc, optIdx) => {
-            const count = p.players.reduce((sum, pl, i) => {
-              const vote = p.negotiationSwitches?.[i] ?? p.votes[i];
-              return vote === optIdx ? sum + pl.seats : sum;
-            }, 0);
-            acc[optIdx] = count;
-            return acc;
-          }, {});
-
-          const winnerOptIdx = Object.keys(finalCounts).reduce((a, b) => finalCounts[a] > finalCounts[b] ? a : b);
-          const winnerOpt = p.curSit.options[winnerOptIdx];
-
-          const newVotes = { ...p.votes };
-          if (p.negotiationSwitches) {
-            Object.entries(p.negotiationSwitches).forEach(([pid, oid]) => {
-              newVotes[pid] = parseInt(oid);
-            });
-          }
-
-          // Traspasar acuerdos activos al libro de pactos
-          const newPacts = [...p.pacts, ...p.activeAgreements];
-
-          return {
-            ...p,
-            votes: newVotes,
-            negotiating: false,
-            pacts: newPacts,
-            activeAgreements: [],
-            negotiationSwitches: {},
-            showResults: false,
-            isAiProcessing: false,
-            attemptedNegotiation: true,
-            logs: [`Acuerdo Alcanzado: Se han registrado ${p.activeAgreements.length} nuevos compromisos en el Libro de Pactos.`, ...p.logs]
-          };
-        });
-
-        // Esperamos un poco para que el estado se asiente antes de la resolución final
-        setTimeout(() => finalizeVote(), 300);
-      };
-
-      // AI Sequencer Effect
-      useEffect(() => {
-        if (phase !== 'playing' || !gs.curSit || gs.isAiProcessing) return;
-
-        const voterQueueIdx = gs.voterQueue[gs.currentVoterPos];
-        const player = gs.players[voterQueueIdx];
-
-        // --- 1. Fase de Votación Parlamentaria ---
-        if (!gs.negotiating && player?.isAI && gs.votes[voterQueueIdx] === undefined) {
-          setGs(p => ({ ...p, isAiProcessing: true }));
-
-          const thinkingTime = 1000 + Math.random() * 1000;
-          setTimeout(() => {
-            const player = gs.players[voterQueueIdx];
-
-            // Determinar si hay un pacto pendiente que obligue a una opción
-            let forcedOptIdx = null;
-            const pendingPact = gs.pacts.find(p =>
-              p.promisorIdx === voterQueueIdx &&
-              p.status === 'Pendiente'
-            );
-
-            if (pendingPact) {
-              const benPos = gs.voterQueue.indexOf(pendingPact.beneficiaryIdx);
-              const proPos = gs.voterQueue.indexOf(voterQueueIdx);
-
-              // Si el beneficiario ya votó, la IA intenta cumplir (si su lealtad no es bajísima)
-              if (benPos < proPos && gs.votes[pendingPact.beneficiaryIdx] !== undefined) {
-                const targetVote = gs.votes[pendingPact.beneficiaryIdx];
-                if (player.loyalty > 50 || Math.random() < 0.8) {
-                  forcedOptIdx = targetVote;
-                }
-              }
-            }
-
-            const bestOptIdx = forcedOptIdx !== null ? forcedOptIdx : calculateBestOptionAI(voterQueueIdx, gs.curSit, gs);
-
-            // Primer paso: Marcar la opción (visual)
-            setGs(p => ({
-              ...p,
-              votes: { ...p.votes, [voterQueueIdx]: bestOptIdx },
-              logs: [`${player.name} analizando propuestas política...`, ...p.logs]
-            }));
-
-            // Segundo paso: Confirmar y pasar al siguiente
-            setTimeout(() => {
-              const isLastVoter = gs.currentVoterPos === gs.voterQueue.length - 1;
-              setGs(p => ({
-                ...p,
-                currentVoterPos: isLastVoter ? p.currentVoterPos : p.currentVoterPos + 1,
-                isAiProcessing: false,
-                logs: [`${player.name} ha emitido su recomendación: Opción ${bestOptIdx + 1}`, ...p.logs]
-              }));
-            }, 1200);
-          }, thinkingTime);
-          return;
-        }
-
-        // --- 2. Fase de Decreto Presidencial (Resolución Automática para IA) ---
-        if (!gs.isAiProcessing && phase === 'playing' && gs.showResults && gs.lastResults?.needsNegotiation && gs.attemptedNegotiation && gs.players[gs.ownerIdx]?.isAI) {
-          setGs(p => ({ ...p, isAiProcessing: true }));
-          setTimeout(() => {
-            if (phase !== 'playing') return;
-            setGs(p => ({ ...p, logs: [`El Presidente ${p.players[p.ownerIdx].name} está evaluando las opciones para el Decreto...`, ...p.logs] }));
-            setTimeout(() => {
-              if (phase === 'playing' && gs.showResults) {
-                finalizeVote(null, true); // null trigger: finalizeVote picks best for owner
-              } else {
-                setGs(p => ({ ...p, isAiProcessing: false }));
-              }
-            }, 3500);
-          }, 1000);
-          return;
-        }
-
-        // --- 2. Fase de Negociación ---
-        if (gs.negotiating) {
-          // Buscar IAs que perdieron y no han decidido su cambio
-          const indecisosIA = gs.players.map((p, i) => ({ p, i }))
-            .filter(({ p, i }) => p.isAI && gs.topOptions && !gs.topOptions.some(([idx]) => parseInt(idx) === gs.votes[i]) && gs.negotiationSwitches?.[i] === undefined);
-
-          if (indecisosIA.length > 0 && gs.curSit) {
-            const nextIA = indecisosIA[0];
-            setGs(p => ({ ...p, isAiProcessing: true }));
-
-            setTimeout(() => {
-              // Elegir opción de las ganadoras por afinidad
-              const winnerOpts = gs.topOptions.map(([idx]) => parseInt(idx));
-              let bestSwitchIdx = winnerOpts[0];
-              let maxScore = -999;
-
-              winnerOpts.forEach(oIdx => {
-                const score = gs.curSit.options[oIdx].party?.[nextIA.p.party] || 0;
-                if (score > maxScore) { maxScore = score; bestSwitchIdx = oIdx; }
-              });
-
-              // Simular que rellena el formulario
-              setGs(p => ({
-                ...p,
-                negotiationSwitches: { ...p.negotiationSwitches, [nextIA.i]: bestSwitchIdx },
-                logs: [`${nextIA.p.name} evaluando coaliciones...`, ...p.logs]
-              }));
-
-              setTimeout(() => {
-                // Buscar un "target" (líder de la opción elegida) para pactar
-                const prospectiveTargetIdx = gs.players.findIndex((p, i) => (gs.negotiationSwitches?.[i] ?? gs.votes[i]) === bestSwitchIdx && i !== nextIA.i);
-
-                if (prospectiveTargetIdx !== -1) {
-                  const benefits = ["Votar igual que yo (Futuro)", "Apoyar mi moción", "Compromiso de inversión"];
-                  const benefit = benefits[Math.floor(Math.random() * benefits.length)];
-
-                  const newAgreement = {
-                    promisorIdx: nextIA.i,
-                    promisorName: nextIA.p.name,
-                    beneficiaryIdx: prospectiveTargetIdx,
-                    beneficiaryName: gs.players[prospectiveTargetIdx].name,
-                    type: 'align', // IA siempre pacta para alinearse en este nivel
-                    detail: benefit,
-                    status: 'Pendiente',
-                    turnCreated: gs.turn,
-                    turnResolved: null
-                  };
-
-                  setGs(p => ({
-                    ...p,
-                    activeAgreements: [...p.activeAgreements, newAgreement],
-                    isAiProcessing: false,
-                    logs: [`${nextIA.p.name} pacta con ${newAgreement.beneficiaryName}: "${benefit}"`, ...p.logs]
-                  }));
-                } else {
-                  setGs(p => ({ ...p, isAiProcessing: false }));
-                }
-              }, 1000);
-            }, 1500);
-            return;
-          }
-
-          /* // DESACTIVADO TEMPORALMENTE PARA VERIFICACIÓN MANUAL
-          if (gs.players[gs.ownerIdx].isAI && !gs.isAiProcessing) {
-            setGs(p => ({ ...p, isAiProcessing: true }));
-            setTimeout(() => {
-              submitNegotiation();
-            }, 2000);
-          }
-          */
-        }
-      }, [gs.currentVoterPos, gs.curSit, gs.negotiating, phase, gs.isAiProcessing, gs.showResults, gs.attemptedNegotiation, gs.ownerIdx]);
-
-      const finalizeVote = (forcedWinnerIdx = null, isDecree = false) => {
-        setGs(p => {
-          const totalSeats = p.players.reduce((sum, pl) => sum + pl.seats, 0);
-          const results = {};
-          const voterDetails = p.players.map((pl, idx) => {
-            const rec = p.votes[idx];
-            const loyalSeats = Math.floor(pl.seats * (pl.loyalty / 100));
-            const rebelSeats = Math.max(0, pl.seats - loyalSeats);
-            const numOpts = p.curSit.options.length;
-            const distribution = Array(numOpts).fill(0);
-
-            // Loyal votes
-            if (rec !== undefined && rec < numOpts) distribution[rec] += loyalSeats;
-            else distribution[Math.floor(Math.random() * numOpts)] += loyalSeats;
-
-            // Rebel votes
-            for (let i = 0; i < rebelSeats; i++) {
-              distribution[Math.floor(Math.random() * numOpts)]++;
-            }
-
-            distribution.forEach((v, i) => { results[i] = (results[i] || 0) + v; });
-            return { name: pl.name, distribution };
-          });
-
-          const sorted = Object.entries(results).sort((a, b) => b[1] - a[1]);
-          let winnerSeats = sorted.length > 0 ? sorted[0][1] : 0;
-          let winnerIdx = sorted.length > 0 ? parseInt(sorted[0][0]) : 0;
-
-          // Si es un Decreto, recalculamos la opción ganadora basada en el interés del Presidente
-          if (isDecree || (typeof forcedWinnerIdx === 'number' && p.attemptedNegotiation)) {
-            const owner = p.players[p.ownerIdx];
-            const topOpts = p.lastResults?.ranking.slice(0, 2) || sorted.slice(0, 2).map(([idx, seats]) => ({ optIdx: parseInt(idx), seats }));
-
-            if (typeof forcedWinnerIdx === 'number' && p.curSit && forcedWinnerIdx < p.curSit.options.length) {
-              winnerIdx = forcedWinnerIdx;
-            } else if (topOpts.length > 0) {
-              // IA (o desempate automático) elige la mejor de las dos opciones líderes
-              let bestIdx = topOpts[0].optIdx;
-              let maxS = -99999;
-              topOpts.forEach(rank => {
-                if (rank.optIdx === p.votes[p.ownerIdx]) {
-                  bestIdx = rank.optIdx;
-                  maxS = 100000; // Máxima lealtad a su propio voto
-                } else {
-                  const s = calculateOptionScoreAI(p.ownerIdx, p.curSit?.options[rank.optIdx], p.budget, p.sectors, p.players, p.tension);
-                  if (s > maxS) { maxS = s; bestIdx = rank.optIdx; }
-                }
-              });
-              winnerIdx = bestIdx;
-            }
-            winnerSeats = totalSeats;
-          }
-
-          const winnerPercent = totalSeats > 0 ? (winnerSeats / totalSeats) * 100 : 0;
-          const needsNegotiation = (isDecree || typeof forcedWinnerIdx === 'number') ? false : winnerPercent <= 50;
-
-          // Prep ranking for summary
-          const ranking = sorted.map(([idx, seats]) => {
-            const optIdx = parseInt(idx);
-            const optObj = p.curSit?.options[optIdx];
-            return {
-              optIdx,
-              text: optObj ? optObj.text : `Opción ${optIdx + 1}`,
-              seats: seats
-            };
-          });
-
-          // Prep recommendations table
-          const recommendations = p.players.map((pl, idx) => ({
-            name: pl.name,
-            seats: pl.seats,
-            recText: p.votes[idx] !== undefined ? `Opción ${p.votes[idx] + 1}` : "Abstención",
-            loyalty: pl.loyalty,
-            disloyalty: 100 - pl.loyalty
-          }));
-
-          const resultsTable = {
-            winner: p.curSit.options[winnerIdx].text,
-            winnerIdx: winnerIdx + 1,
-            percent: winnerPercent,
-            needsNegotiation,
-            ranking,
-            recommendations,
-            voterDetails,
-            wasNegotiated: !!p.activeAgreements.length || (p.pacts.length > 0 && p.attemptedNegotiation),
-            isDecree: isDecree || (typeof forcedWinnerIdx === 'number' && p.attemptedNegotiation)
-          };
-
-          let updatedPacts = [...p.pacts];
-          const voterOrder = p.voterQueue;
-
-          // Evaluación de pactos persistentes (solo evaluar pactos de turnos anteriores)
-          updatedPacts = updatedPacts.map(pact => {
-            if (pact.status !== 'Pendiente' || pact.turnCreated === p.turn) return pact;
-
-            const benPos = voterOrder.indexOf(pact.beneficiaryIdx);
-            const proPos = voterOrder.indexOf(pact.promisorIdx);
-
-            // Solo evaluar si el beneficiario votó ANTES que el promitente en este turno
-            if (benPos !== -1 && proPos !== -1 && benPos < proPos) {
-              const benVote = p.votes[pact.beneficiaryIdx];
-              const proVote = p.votes[pact.promisorIdx];
-
-              let fulfilled = false;
-              if (pact.type === 'align') {
-                fulfilled = (proVote === benVote);
-              } else if (pact.type === 'block') {
-                // En contra de rival (asumimos que el rival es el que NO es el beneficiario en una votación dividida)
-                // O simplemente que NO votó lo mismo que el beneficiario si el beneficiario es el oponente.
-                // Para simplificar: Traición si votó lo mismo que la opción más votada por la oposición.
-                fulfilled = (proVote === benVote); // Similar a align por ahora
-              } else if (pact.type === 'support') {
-                fulfilled = (proVote === benVote);
-              }
-
-              return {
-                ...pact,
-                status: fulfilled ? 'Cumplido' : 'Traición',
-                turnResolved: p.turn
-              };
-            }
-            return pact;
-          });
-
-          if (!needsNegotiation) {
-            const opt = p.curSit.options[winnerIdx];
-            const SECTOR_UNIT = 10;
-            let newBudget = p.budget - opt.cost;
-            let hasRescueTriggered = false;
-            let gameOverFlag = false;
-            let reason = "";
-
-            // --- Lógica de Bancarrota y Rescate ---
-            if (opt.isBankruptcy) {
-              gameOverFlag = true;
-              reason = "Bancarrota Técnica: El gobierno ha colapsado por insolvencia financiera.";
-            } else if (newBudget < 0 && !p.hasRequestedRescue && !p.curSit.isRescue) {
-              // Trigger de Rescate inmediato (no se aplican efectos de la opción ganadora aún si causa quiebra?)
-              // En este caso, dejamos que la opción se aplique, pero marcamos que viene el rescate
-              hasRescueTriggered = true;
-            } else if (newBudget < 0 && p.hasRequestedRescue) {
-              // Si ya pidió rescate y vuelve a caer a < 0, es fin de partida
-              gameOverFlag = true;
-              reason = "Insolvencia Terminal: El país no puede sostener más deuda externa.";
-            }
-
-            // Actualizar sectores con SECTOR_UNIT
-            const newSectors = p.sectors.map(s => {
-              const effect = opt.sector?.[s.name] || 0;
-              return { ...s, value: Math.max(0, Math.min(1000, s.value + (effect * SECTOR_UNIT))) };
-            });
-
-            const weightedImpact = p.sectors.reduce((acc, s) => {
-              const effect = opt.sector?.[s.name] || 0;
-              return acc + (effect * (s.weight || 1));
-            }, 0);
-
-            const totalDeviation = newSectors.reduce((acc, s) => acc + Math.abs(s.value - 500), 0);
-            const maxPossibleDeviation = newSectors.length * 500;
-            const newTension = (totalDeviation / maxPossibleDeviation) * 100;
-            const newMedia = Math.min(10, Math.max(0, p.media + (winnerPercent / 20) - 2));
-
-            const newPlayers = p.players.map((pl, idx) => {
-              const partyEffect = opt.party?.[pl.party] || 0;
-              const isOwner = idx === p.ownerIdx;
-              const newAP = Math.max(0, Math.min(1000, pl.ap + partyEffect));
-              const newOP = isOwner ? Math.max(0, Math.min(1000, pl.op + (weightedImpact * 0.5))) : pl.op;
-              return { ...pl, op: newOP, ap: newAP };
-            });
-
-            return {
-              ...p,
-              showResults: true,
-              lastResults: resultsTable,
-              budget: newBudget,
-              sectors: newSectors,
-              players: newPlayers,
-              tension: newTension,
-              media: newMedia,
-              pacts: [...updatedPacts, ...p.activeAgreements],
-              activeAgreements: [],
-              pendingPact: null,
-              attemptedNegotiation: false,
-              showingDecree: false,
-              isAiProcessing: false,
-              isGameOver: gameOverFlag,
-              gameOverReason: reason,
-              pendingRescueTrigger: hasRescueTriggered,
-              hasRequestedRescue: p.hasRequestedRescue || opt.isRescue
-            };
-          } else {
-            // NO majority - Show results first, mark for negotiation
-            return {
-              ...p,
-              showResults: true,
-              lastResults: resultsTable,
-              topOptions: sorted.slice(0, 2),
-              isAiProcessing: false,
-              logs: ["Consenso insuficiente (<=50%). Procediendo a vista de escrutinio.", ...p.logs]
-            };
-          }
-        });
+        setGs(newGs); updateRemote(newGs);
       };
 
       const closeResults = () => {
-        setGs(p => {
-          if (p.isGameOver) return p; // Ya terminó, no avanzar
-
-          const nextOwnerIdx = (p.ownerIdx + 1) % p.players.length;
-          const nextOwnerName = p.players[nextOwnerIdx].name;
-          let updatedPlayers = [...p.players];
-          let cycleLogs = [];
-          let isEndOfRound = nextOwnerIdx === 0;
-          let electionSummary = null;
-          let forceGameOver = false;
-          let forceReason = "";
-          let nextSit = null;
-
-          // --- Chequeo de Rescate Financiero ---
-          if (p.pendingRescueTrigger) {
-            nextSit = EXTERNAL_DATA.RESCUE_SITUATION;
-            cycleLogs.push("ALERTA: Crisis de Deuda Externa. El Fondo Internacional ha intervenido.");
-          }
-
-          // --- Chequeo de Fin de Legislatura ---
-          if (p.turn >= 12 && !p.pendingRescueTrigger) {
-            forceGameOver = true;
-            forceReason = "Legislatura Cumplida: Se ha completado el periodo constitucional de 12 turnos.";
-          }
-
-          if (isEndOfRound && !forceGameOver && !p.pendingRescueTrigger) {
-            cycleLogs.push("--- Fin de Ronda: Recuento Electoral ---");
-            const totalSeats = updatedPlayers.length * 20;
-            const totalOP = updatedPlayers.reduce((sum, pl) => sum + Math.max(0, pl.op), 0);
-            const oldStats = updatedPlayers.map(pl => ({ id: pl.id, seats: pl.seats, loyalty: pl.loyalty }));
-
-            if (totalOP > 0) {
-              let assignedSeats = 0;
-              const fractions = [];
-              updatedPlayers = updatedPlayers.map((pl, idx) => {
-                const exact = (Math.max(0, pl.op) / totalOP) * totalSeats;
-                const whole = Math.floor(exact);
-                fractions.push({ idx, frac: exact - whole });
-                assignedSeats += whole;
-                return { ...pl, oldSeats: pl.seats, seats: whole };
-              });
-              const remaining = totalSeats - assignedSeats;
-              fractions.sort((a, b) => b.frac - a.frac);
-              for (let i = 0; i < remaining; i++) {
-                updatedPlayers[fractions[i].idx].seats += 1;
-              }
-              updatedPlayers.forEach(pl => {
-                if (pl.seats !== pl.oldSeats) {
-                  cycleLogs.push(`${pl.party}: ${pl.oldSeats} ➔ ${pl.seats} bancas`);
-                }
-              });
-            }
-
-            updatedPlayers = updatedPlayers.map(pl => {
-              const oldStat = oldStats.find(os => os.id === pl.id);
-              const delta = (pl.ap - 100) / 2;
-              const newLoyalty = Math.max(40, Math.min(100, 70 + delta));
-              if (Math.round(newLoyalty) !== Math.round(oldStat.loyalty)) {
-                cycleLogs.push(`${pl.name}: Lealtad ajustada a ${Math.round(newLoyalty)}%`);
-              }
-              return { ...pl, oldSeats: oldStat.seats, oldLoyalty: oldStat.loyalty, loyalty: newLoyalty };
-            });
-
-            electionSummary = updatedPlayers.map(pl => ({
-              name: pl.name, party: pl.party, op: pl.op, ap: pl.ap,
-              oldSeats: pl.oldSeats, newSeats: pl.seats,
-              oldLoyalty: pl.oldLoyalty, newLoyalty: pl.loyalty, color: pl.color
-            }));
-          }
-
-          return {
-            ...p,
-            showResults: false,
-            showElection: isEndOfRound && !forceGameOver && !p.pendingRescueTrigger,
-            electionData: electionSummary,
-            curSit: nextSit, // Si es el rescate, lo inyectamos aquí
-            turn: forceGameOver ? p.turn : p.turn + 1,
-            ownerIdx: nextOwnerIdx,
-            voterQueue: [],
-            votes: {},
-            currentVoterPos: 0,
-            negotiating: false,
-            players: updatedPlayers,
-            isAiProcessing: false,
-            isGameOver: forceGameOver || p.isGameOver,
-            gameOverReason: forceReason || p.gameOverReason,
-            pendingRescueTrigger: false, // Resetear
-            history: [...p.history, { turn: p.turn, budget: p.budget }],
-            logs: [`Turno ${p.turn} finalizado. Próximo turno para: ${nextOwnerName}`, ...cycleLogs, ...p.logs]
-          };
-        });
+        if (!isHost) return;
+        const newGs = { ...gs, showResults: false, curSit: null, ownerIdx: (gs.ownerIdx + 1) % gs.players.length, turn: gs.turn + 1 };
+        setGs(newGs); updateRemote(newGs);
         setTab('dashboard');
       };
+      // AI Logic (Only Host runs it)
+      useEffect(() => {
+        if (!isHost || phase !== 'playing' || !gs.curSit || gs.isAiProcessing) return;
+        const voterIdx = gs.voterQueue[gs.currentVoterPos];
+        if (gs.players[voterIdx] && !gs.players[voterIdx].isHuman && gs.votes[voterIdx] === undefined) {
+          setGs(p => ({ ...p, isAiProcessing: true }));
+          setTimeout(() => {
+            const optIdx = Math.floor(Math.random() * gs.curSit.options.length);
+            const isLast = gs.currentVoterPos === gs.voterQueue.length - 1;
+            const newGs = { ...gs, votes: { ...gs.votes, [voterIdx]: optIdx }, currentVoterPos: isLast ? gs.currentVoterPos : gs.currentVoterPos + 1, isAiProcessing: false };
+            setGs(newGs); updateRemote(newGs);
+          }, 1000);
+        }
+      }, [isHost, gs.currentVoterPos, gs.curSit, phase]);
 
-      if (gs.isGameOver) {
-        return <GameOverScreen gs={gs} resetGame={resetGame} />;
+      if (phase === 'lobby') {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-8 text-white bg-black animate-page">
+            <div className="glass max-w-md w-full p-12 rounded-[3.5rem] space-y-10 border border-white/10 text-center relative overflow-hidden">
+              <div className="absolute -top-24 -right-24 w-64 h-64 bg-blue-600/10 blur-[100px] rounded-full"></div>
+              <h1 className="text-5xl font-black italic tracking-tighter relative">MAURI<span className="text-blue-500">LAND</span></h1>
+              <div className="space-y-4 relative">
+                <button onClick={createRoom} className="w-full bg-blue-600 hover:bg-blue-500 py-6 rounded-3xl font-black uppercase tracking-widest transition-all shadow-2xl active:scale-95 text-xs">Crear Sala</button>
+                <div className="flex items-center gap-4 py-2 opacity-30"><div className="h-[1px] bg-white flex-grow"></div><span className="text-[10px] font-black uppercase">o</span><div className="h-[1px] bg-white flex-grow"></div></div>
+                <input type="text" maxLength="4" placeholder="CÓDIGO" value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())} className="w-full bg-white/5 border border-white/10 p-6 rounded-3xl text-center font-black text-2xl tracking-[0.5em] focus:border-blue-500 outline-none transition-all" />
+                <button onClick={() => joinRoom(joinCode)} disabled={joinCode.length < 4} className="w-full bg-white/10 hover:bg-white/20 py-6 rounded-3xl font-black uppercase tracking-widest transition-all disabled:opacity-20 active:scale-95 text-xs">Unirse</button>
+              </div>
+            </div>
+          </div>
+        );
       }
 
-      if (phase === 'setup') return (
-        <div className="min-h-screen flex items-center justify-center p-8 text-white">
-          <div className="glass max-w-xl w-full p-12 rounded-[3rem] text-center space-y-10 animate-page">
-            <Icon name="gov" className="w-16 h-16 text-blue-500 mx-auto" />
-            <h1 className="text-5xl font-bold tracking-tight">Configuración de <span className="gradient-text">Mauriland</span></h1>
-            <div className="space-y-4">
-              <label className="text-sm font-bold uppercase tracking-widest text-slate-500">¿Cuántos jugadores participarán?</label>
-              <div className="flex justify-center space-x-2">
-                {[2, 3, 4, 5, 6].map(n => (
-                  <button key={n} onClick={() => setNumPlayers(n)} className={`w-12 h-12 rounded-xl font-bold transition-all ${numPlayers === n ? 'bg-blue-600 text-white scale-110 shadow-lg' : 'bg-white/5 text-slate-400 hover:bg-white/10'}`}>{n}</button>
+      if (phase === 'setup') {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-8 text-white bg-black animate-page">
+            <div className="glass max-w-2xl w-full p-12 rounded-[3.5rem] space-y-12 border border-white/10 relative overflow-hidden">
+              <div className="text-center space-y-4">
+                <span className="text-blue-500 font-black text-sm tracking-widest uppercase">SALA: {roomCode}</span>
+                <h2 className="text-6xl font-black uppercase tracking-tighter">Lobby <span className="text-blue-500 italic">Online</span></h2>
+                <p className="text-slate-400 font-medium">Jugadores en sala: {gs.players.length}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                {gs.players.map((p, idx) => (
+                  <div key={idx} className="bg-white/5 border border-white/10 p-5 rounded-3xl flex items-center space-x-4">
+                    <div className="w-10 h-10 bg-blue-500/20 rounded-2xl flex items-center justify-center text-blue-400 font-black">{idx + 1}</div>
+                    <span className="font-black text-white text-sm">{p.name} {p.id === playerId ? '(Tú)' : ''}</span>
+                  </div>
                 ))}
               </div>
-            </div>
-
-            <div className="space-y-4">
-              <label className="text-sm font-bold uppercase tracking-widest text-slate-500">Dificultad de la IA</label>
-              <div className="flex justify-center space-x-2">
-                {['Fácil', 'Medio', 'Difícil'].map(d => (
-                  <button key={d} onClick={() => setGs(p => ({ ...p, difficulty: d }))}
-                    className={`px-6 py-3 rounded-xl font-bold transition-all uppercase text-[11px] tracking-widest ${gs.difficulty === d ? 'bg-orange-600 text-white scale-105 shadow-lg shadow-orange-900/40' : 'bg-white/5 text-slate-400 hover:bg-white/10'}`}>
-                    {d}
-                  </button>
-                ))}
-              </div>
-              <p className="text-[10px] text-slate-500 italic max-w-xs mx-auto">
-                {gs.difficulty === 'Fácil' && "La IA comete errores estratégicos frecuentes (50-70% precisión)."}
-                {gs.difficulty === 'Medio' && "La IA juega de forma equilibrada y previsible (70-90% precisión)."}
-                {gs.difficulty === 'Difícil' && "La IA maximiza su ventaja y castiga tus errores (90-100% precisión)."}
-              </p>
-            </div>
-            <button onClick={startSetup} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-5 rounded-2xl shadow-xl transition-all active:scale-95 uppercase text-sm tracking-widest">Siguiente Paso</button>
-          </div>
-        </div>
-      );
-
-      if (phase === 'setup-details') return (
-        <div className="min-h-screen flex items-center justify-center p-8 text-white">
-          <div className="glass max-w-2xl w-full p-10 rounded-[3rem] space-y-8 animate-page">
-            <h2 className="text-2xl font-bold uppercase tracking-tight text-center">Identidad de los <span className="text-blue-500">Actores</span></h2>
-            <div className="space-y-4 max-h-[400px] overflow-y-auto px-4 custom-scrollbar">
-              {gs.players.map((pl, i) => (
-                <div key={i} className="flex items-center space-x-4 p-4 bg-white/5 rounded-2xl border border-white/5">
-                  <div className="w-10 h-10 bg-blue-500/20 rounded-full flex items-center justify-center font-bold text-blue-400">{i + 1}</div>
-                  <input value={pl.name} onChange={(e) => {
-                    const newP = [...gs.players]; newP[i].name = e.target.value; setGs({ ...gs, players: newP });
-                  }} className="flex-grow bg-transparent border-b border-white/10 py-2 focus:outline-none focus:border-blue-500 font-medium text-white" />
-                  <button onClick={() => {
-                    const newP = [...gs.players]; newP[i].isAI = !newP[i].isAI; setGs({ ...gs, players: newP });
-                  }} className={`px-4 py-2 rounded-lg text-[13px] font-bold uppercase transition-all ${pl.isAI ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30' : 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30'}`}>
-                    {pl.isAI ? 'Sistema (IA)' : 'Humano'}
-                  </button>
+              {isHost ? (
+                <div className="space-y-6">
+                  <div className="flex items-center justify-center space-x-8">
+                    <button onClick={() => setNumPlayers(Math.max(2, numPlayers - 1))} className="text-2xl bg-white/5 w-12 h-12 rounded-full border border-white/10">-</button>
+                    <span className="text-4xl font-black italic">{numPlayers} Actores</span>
+                    <button onClick={() => setNumPlayers(Math.min(10, numPlayers + 1))} className="text-2xl bg-white/5 w-12 h-12 rounded-full border border-white/10">+</button>
+                  </div>
+                  <button onClick={startSetup} className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase tracking-widest text-xs">Configurar Partida</button>
                 </div>
-              ))}
-            </div>
-            <button onClick={finalizeSetup} className="w-full bg-white text-black font-bold py-5 rounded-2xl shadow-xl transition-all hover:bg-blue-50 uppercase text-sm tracking-widest">Asignar Partidos</button>
-          </div>
-        </div>
-      );
-
-      if (phase === 'assignment') return (
-        <div className="min-h-screen flex items-center justify-center p-8 text-white">
-          <div className="max-w-5xl w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-page">
-            <div className="md:col-span-full text-center space-y-4 mb-8">
-              <h2 className="text-6xl font-extrabold tracking-tighter uppercase">Asignación <span className="text-blue-500">Aleatoria</span></h2>
-              <p className="text-slate-500 font-medium">El destino ha hablado. Estos son tus escaños e intereses políticos.</p>
-            </div>
-            {gs.players.map((p, i) => (
-              <div key={i} className="glass p-8 rounded-[2rem] border-t-8 space-y-4 relative overflow-hidden group" style={{ borderTopColor: p.color }}>
-                <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Icon name="user" className="w-20 h-20" /></div>
-                <span className="text-[13px] uppercase tracking-widest font-black text-slate-500">{p.isAI ? 'Controlado por IA' : 'Control Humano'}</span>
-                <h3 className="text-3xl font-bold leading-none">{p.name}</h3>
-                <div className="space-y-1">
-                  <div className="text-sm font-bold text-blue-400 uppercase">{p.party}</div>
-                  <p className="text-[14px] text-slate-400 leading-relaxed line-clamp-2">{EXTERNAL_DATA.PARTIES[p.party]?.desc}</p>
-                </div>
-                <div className="pt-4 grid grid-cols-2 gap-4">
-                  <div className="bg-black/20 p-3 rounded-xl border border-white/5"><span className="block text-[12px] text-slate-500 uppercase font-bold">Aprobación</span><span className="text-2xl font-bold">{p.ap}%</span></div>
-                  <div className="bg-black/20 p-3 rounded-xl border border-white/5"><span className="block text-[12px] text-slate-500 uppercase font-bold">Escaños</span><span className="text-2xl font-bold">{p.seats}</span></div>
-                </div>
-              </div>
-            ))}
-            <div className="md:col-span-full flex justify-center pt-10">
-              <button onClick={() => {
-                setPhase('playing');
-                // Forzar primera situación al entrar
-                setTimeout(nextSituation, 100);
-              }} className="bg-blue-600 text-white font-bold px-16 py-6 rounded-[2rem] shadow-2xl shadow-blue-900/40 hover:scale-105 transition-all uppercase text-sm tracking-[0.2em]">Entrar al Palacio Legislativo</button>
+              ) : (
+                <p className="text-blue-400 font-black text-center animate-pulse uppercase text-[10px] tracking-widest">Esperando al Anfitrión...</p>
+              )}
             </div>
           </div>
-        </div>
-      );
+        );
+      }
+
+      if (gs.isGameOver) return <GameOverScreen gs={gs} resetGame={() => window.location.reload()} />;
 
       return (
-        <div className="flex flex-col min-h-screen text-white">
-          {/* Modal Escrutinio de Ronda (Elecciones) */}
-          {gs.showElection && (
-            <div className="fixed inset-0 z-[200] flex items-center justify-center p-8 bg-black/95 backdrop-blur-2xl animate-fade-in">
-              <div className="glass max-w-5xl w-full p-12 rounded-[3.5rem] border border-white/10 shadow-2xl space-y-8 animate-jump-in overflow-y-auto max-h-[90vh] custom-scrollbar">
-                <div className="text-center space-y-4">
-                  <div className="w-16 h-16 bg-blue-600/20 rounded-full flex items-center justify-center mx-auto border border-blue-600/30">
-                    <Icon name="gov" className="w-8 h-8 text-blue-400" />
-                  </div>
-                  <h2 className="text-5xl font-black uppercase tracking-tighter">Recuento <span className="text-blue-500">Electoral</span></h2>
-                  <p className="text-slate-400 font-medium">La ronda ha finalizado. El pueblo y las bases partidarias han evaluado el desempeño de la gestión.</p>
-                </div>
-
-                <div className="grid gap-4">
-                  {gs.electionData?.map((ed, i) => (
-                    <div key={i} className="glass p-6 rounded-3xl border border-white/5 flex flex-col md:flex-row justify-between items-center gap-6 relative overflow-hidden group">
-                      <div className="absolute top-0 left-0 w-1.5 h-full opacity-50 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: ed.color }}></div>
-                      <div className="flex items-center space-x-6 min-w-[200px]">
-                        <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center text-2xl font-bold border border-white/10">{i + 1}</div>
-                        <div>
-                          <h3 className="font-bold text-xl text-white">{ed.name}</h3>
-                          <span className="text-[13px] uppercase font-black text-slate-500 tracking-widest">{ed.party}</span>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-6 flex-grow">
-                        <div className="text-center">
-                          <span className="block text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-widest">Opinión (OP)</span>
-                          <span className="text-2xl font-black text-white">{ed.op}</span>
-                        </div>
-                        <div className="text-center">
-                          <span className="block text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-widest">Aprobación (AP)</span>
-                          <span className="text-2xl font-black text-white">{ed.ap}</span>
-                        </div>
-                        <div className="text-center p-3 bg-blue-500/10 rounded-2xl border border-blue-500/20">
-                          <span className="block text-[10px] text-blue-400 uppercase font-bold mb-1 tracking-widest">Nuevas Bancas</span>
-                          <div className="flex items-center justify-center space-x-2">
-                            <span className="text-slate-600 text-sm line-through font-mono">{ed.oldSeats}</span>
-                            <span className="text-2xl font-black text-white font-mono">{ed.newSeats}</span>
-                            <Icon name="law" className="w-3 h-3 text-blue-400 opacity-50" />
-                          </div>
-                        </div>
-                        <div className="text-center p-3 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
-                          <span className="block text-[10px] text-emerald-400 uppercase font-bold mb-1 tracking-widest">Nueva Lealtad</span>
-                          <div className="flex items-center justify-center space-x-2">
-                            <span className="text-slate-600 text-sm line-through font-mono">{Math.round(ed.oldLoyalty)}%</span>
-                            <span className="text-2xl font-black text-white font-mono">{Math.round(ed.newLoyalty)}%</span>
-                            <Icon name="stats" className="w-3 h-3 text-emerald-400 opacity-50" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <button onClick={() => setGs(p => ({ ...p, showElection: false }))} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-6 rounded-3xl shadow-xl transition-all uppercase text-sm tracking-widest active:scale-95 shadow-blue-500/20">Comenzar Próxima Ronda de Gestión</button>
-              </div>
-            </div>
-          )}
-
+        <div className="flex flex-col min-h-screen text-white bg-[#07080c]">
           <nav className="glass border-b border-white/10 px-8 py-4 sticky top-0 z-50 flex justify-between items-center">
             <div className="flex items-center space-x-3">
               <Icon name="gov" className="text-blue-500 w-8 h-8" />
-              <span className="text-2xl font-bold tracking-tighter uppercase">Mauriland <span className="text-blue-500">v3.0</span></span>
+              <span className="text-2xl font-bold tracking-tighter uppercase italic">MauriLand <span className="text-[10px] font-black text-slate-500 ml-2">SALA: {roomCode}</span></span>
             </div>
             <div className="flex space-x-8 text-sm font-bold uppercase tracking-widest text-slate-400">
-              {['players', 'dashboard', 'parliament', 'negotiation', 'logs'].map(t => (
-                <button key={t} onClick={() => setTab(t)} className={`hover:text-white transition-all ${tab === t ? 'btn-active' : ''}`}>
-                  {t === 'players' ? 'Jugadores' : t === 'dashboard' ? 'Nación' : t === 'parliament' ? 'Cámara' : t === 'negotiation' ? 'Pactos' : 'Actas'}
+              {['players', 'dashboard', 'parliament', 'logs'].map(t => (
+                <button key={t} onClick={() => setTab(t)} className={`hover:text-white transition-all ${tab === t ? 'border-b-2 border-blue-500 pb-1 text-white' : ''}`}>
+                  {t === 'players' ? 'Cámara' : t === 'dashboard' ? 'Nación' : t === 'parliament' ? 'Votos' : 'Actas'}
                 </button>
               ))}
             </div>
             <div className="flex items-center space-x-6">
-              <div className="flex space-x-4 bg-black/40 px-6 py-2 rounded-full border border-white/5 items-center">
-                <span className="text-blue-400 font-bold">${gs.budget}M</span>
-                <span className="text-white/20">|</span>
-                <span className="text-slate-300 font-bold uppercase text-[13px] tracking-tighter">Turno {gs.turn} / 12</span>
+              <div className="bg-black/40 px-6 py-2 rounded-full border border-white/5 flex items-center space-x-4">
+                <span className="text-blue-400 font-black">${gs.budget}M</span>
+                <span className="text-slate-300 font-black text-[11px]">Turno {gs.turn}/12</span>
               </div>
-              <button onClick={resetGame} title="Reiniciar Partida" className="w-10 h-10 rounded-full bg-red-500/10 border border-red-500/20 text-red-500 flex items-center justify-center hover:bg-red-500 hover:text-white transition-all active:scale-95 shadow-lg shadow-red-900/20">
-                <Icon name="shake" className="w-5 h-5" />
-              </button>
             </div>
           </nav>
 
           <main className="max-w-7xl mx-auto w-full p-8 flex-grow">
-            {tab === 'players' && <TabPlayers gs={gs} />}
-            {tab === 'dashboard' && <TabDashboard gs={gs} nextSituation={nextSituation} resetGame={resetGame} setTab={setTab} />}
-            {tab === 'parliament' && <TabParliament gs={gs} castVote={castVote} finalizeVote={finalizeVote} offerPrebenda={offerPrebenda} closeResults={closeResults} submitNegotiation={submitNegotiation} setGs={setGs} setTab={setTab} nextSituation={nextSituation} />}
-            {tab === 'negotiation' && <TabNegotiation gs={gs} />}
-            {tab === 'logs' && <TabLogs gs={gs} />}
-          </main>
+            {phase === 'setup-details' && (
+              <div className="animate-page glass rounded-[3.5rem] p-12 border border-white/10 max-w-3xl mx-auto text-center space-y-10">
+                <h2 className="text-5xl font-black uppercase tracking-tighter">Nombres de <span className="text-blue-500">Líderes</span></h2>
+                <div className="space-y-4 max-h-[400px] overflow-y-auto px-4 custom-scrollbar">
+                  {gs.players.map((p, i) => (
+                    <div key={i} className="glass p-5 rounded-3xl border border-white/5 flex items-center space-x-4">
+                      <div className="w-10 h-10 bg-blue-500/20 rounded-full flex items-center justify-center font-bold text-blue-400">{i + 1}</div>
+                      <input
+                        className="flex-grow bg-transparent border border-white/10 rounded-xl px-4 py-3 text-white font-black"
+                        value={p.name}
+                        disabled={p.id !== playerId && !isHost}
+                        onChange={(e) => {
+                          const newP = [...gs.players]; newP[i].name = e.target.value;
+                          const newGs = { ...gs, players: newP };
+                          setGs(newGs); if (isHost) updateRemote(newGs);
+                        }}
+                      />
+                      <button
+                        onClick={() => {
+                          if (!isHost) return;
+                          const newP = [...gs.players];
+                          newP[i].isHuman = !newP[i].isHuman;
+                          const newGs = { ...gs, players: newP };
+                          setGs(newGs); updateRemote(newGs);
+                        }}
+                        disabled={!isHost}
+                        className={`px-6 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all ${p.isHuman ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30' : 'bg-purple-600/20 text-purple-400 border border-purple-500/30'} ${!isHost ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105 active:scale-95'}`}
+                      >
+                        {p.isHuman ? 'Humano' : 'Sistema IA'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {isHost && <button onClick={finalizeSetup} className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase text-xs shadow-2xl shadow-blue-900/40">Asignar Partidos</button>}
+              </div>
+            )}
 
-          <footer className="p-8 text-center text-[13px] text-slate-600 uppercase tracking-widest font-bold border-t border-white/5 bg-black/50">
-            Mauriland Simulation Framework — Engine 6.0 — Sincronizado con word/document.xml
-          </footer>
+            {phase === 'assignment' && (
+              <div className="animate-page glass rounded-[3.5rem] p-12 border border-white/10 max-w-5xl mx-auto space-y-12 text-center">
+                <h2 className="text-5xl font-black uppercase tracking-tighter">Asignación <span className="text-blue-500 italic">Oficial</span></h2>
+                <div className="grid grid-cols-3 gap-6">
+                  {gs.players.map((p, i) => (
+                    <div key={i} className="glass p-6 rounded-3xl border-t-4" style={{ borderTopColor: p.color }}>
+                      <h3 className="text-xl font-black">{p.name}</h3>
+                      <div className="text-[10px] font-black uppercase opacity-50">{p.party}</div>
+                      <div className="flex justify-between text-[11px] font-bold mt-4 border-t border-white/5 pt-2">
+                        <span>{p.seats} BANCAS</span>
+                        <span>{p.ap}% AP</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {isHost && <button onClick={() => updateRemote(gs, 'playing')} className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase text-xs">Entrar al Palacio</button>}
+              </div>
+            )}
+
+            {phase === 'playing' && (
+              <>
+                {tab === 'players' && <TabPlayers gs={gs} />}
+                {tab === 'dashboard' && <TabDashboard gs={gs} nextSituation={nextSituation} resetGame={() => window.location.reload()} setTab={setTab} isHost={isHost} />}
+                {tab === 'parliament' && <TabParliament gs={gs} castVote={castVote} finalizeVote={finalizeVote} isHost={isHost} playerId={playerId} />}
+                {tab === 'logs' && <TabLogs gs={gs} />}
+              </>
+            )}
+          </main>
         </div>
       );
+
+
+
     }
 
     function GameOverScreen({ gs, resetGame }) {
