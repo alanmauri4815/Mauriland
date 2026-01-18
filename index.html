@@ -7233,6 +7233,7 @@
 
         const handleUpdate = (snapshot) => {
           const data = snapshot.val();
+          console.log("Firebase Update:", data);
           if (data && data.gs) {
             setGs(data.gs);
             if (data.phase) setPhase(data.phase);
@@ -7319,8 +7320,21 @@
 
       // --- Multiplayer Actions ---
       const nextSituation = () => {
-        if (!isHost || gs.curSit || gs.isGameOver) return;
-        const s = EXTERNAL_DATA.SITUATIONS[Math.floor(Math.random() * EXTERNAL_DATA.SITUATIONS.length)];
+        console.log("Attempting nextSituation. isHost:", isHost, "curSit:", gs.curSit, "isGameOver:", gs.isGameOver);
+        if (!isHost || gs.curSit || gs.isGameOver) {
+          console.warn("nextSituation aborted: ", { isHost, hasSit: !!gs.curSit, isGameOver: gs.isGameOver });
+          return;
+        }
+
+        const situations = EXTERNAL_DATA.SITUATIONS;
+        if (!situations || situations.length === 0) {
+          console.error("No situations found in EXTERNAL_DATA");
+          return;
+        }
+
+        const s = situations[Math.floor(Math.random() * situations.length)];
+        console.log("Picked situation:", s.id);
+
         const order = Array.from({ length: gs.players.length }).map((_, i) => (gs.ownerIdx + i) % gs.players.length);
         const newGs = {
           ...gs,
@@ -7343,29 +7357,80 @@
       };
 
       const finalizeVote = () => {
-        if (!isHost) return;
+        if (!isHost || !gs.curSit) return;
         const options = gs.curSit.options;
         const totalSeats = gs.players.reduce((sum, p) => sum + p.seats, 0);
         const tally = options.map(() => 0);
-        Object.entries(gs.votes).forEach(([pIdx, optIdx]) => { tally[optIdx] += gs.players[pIdx].seats; });
+        Object.entries(gs.votes).forEach(([pIdx, optIdx]) => {
+          tally[optIdx] += gs.players[pIdx].seats;
+        });
 
-        const winIdx = tally.findIndex(v => v >= totalSeats * 0.4);
-        const winOpt = options[winIdx] || { text: "Ley Archivada", cost: 0, sector: {}, party: {} };
+        // Determine winner based on 40% majority rule
+        const threshold = totalSeats * 0.4;
+        let winIdx = -1;
+        let maxVotes = -1;
+        tally.forEach((v, i) => {
+          if (v >= threshold && v > maxVotes) {
+            maxVotes = v;
+            winIdx = i;
+          }
+        });
 
-        let newGs = {
-          ...gs, budget: gs.budget - (winOpt.cost || 0), showResults: true,
-          lastResults: { winner: winOpt.text, winnerIdx: winIdx + 1, percent: (tally[winIdx] / totalSeats) * 100 }
-        };
+        const winOpt = winIdx !== -1 ? options[winIdx] : null;
+        const logs = [...gs.logs];
 
-        if (newGs.budget <= 0) {
-          newGs.isGameOver = true;
-          newGs.gameOverReason = "Bancarrota Nacional.";
-        } else if (gs.turn >= 12) {
-          newGs.isGameOver = true;
-          newGs.gameOverReason = "Fin de Legislatura.";
+        let newGs = { ...gs, showResults: true };
+
+        if (winOpt) {
+          logs.unshift(`Aprobado: ${winOpt.text} (${maxVotes} votos)`);
+
+          // Apply Sector Impacts
+          const newSectors = gs.sectors.map(s => {
+            const impact = winOpt.sector[s.name] || 0;
+            return { ...s, value: Math.max(0, Math.min(1000, s.value + impact)) };
+          });
+
+          // Apply Player/Party Impacts
+          const newPlayers = gs.players.map(p => {
+            const pImpact = winOpt.party[p.party] || 0;
+            const newAp = Math.max(0, Math.min(100, p.ap + pImpact));
+            // Modify seats based on AP changes (simple logic)
+            const seatChange = Math.floor(pImpact / 10);
+            return { ...p, ap: newAp, seats: Math.max(5, p.seats + seatChange) };
+          });
+
+          newGs = {
+            ...newGs,
+            budget: gs.budget - (winOpt.cost || 0),
+            sectors: newSectors,
+            players: newPlayers,
+            lastResults: {
+              winner: winOpt.text,
+              winnerIdx: winIdx + 1,
+              percent: Math.round((maxVotes / totalSeats) * 100)
+            }
+          };
+        } else {
+          logs.unshift(`Rechazado: No se alcanzó la mayoría del 40%`);
+          newGs.lastResults = { winner: "Ley Archivada", winnerIdx: 0, percent: 0 };
         }
 
-        setGs(newGs); updateRemote(newGs);
+        newGs.logs = logs;
+
+        // Check Game Over Conditions
+        if (newGs.budget <= 0) {
+          newGs.isGameOver = true;
+          newGs.gameOverReason = "Bancarrota Nacional: El país se ha quedado sin fondos operativos.";
+        } else if (gs.turn >= 12) {
+          newGs.isGameOver = true;
+          newGs.gameOverReason = "Fin de Legislatura: Se ha cumplido el tiempo de mandato constitucional.";
+        } else if (newGs.sectors.some(s => s.value <= 100)) {
+          newGs.isGameOver = true;
+          newGs.gameOverReason = "Colapso Social: Un sector clave ha llegado a un nivel de crisis insostenible.";
+        }
+
+        setGs(newGs);
+        updateRemote(newGs);
       };
 
       const closeResults = () => {
