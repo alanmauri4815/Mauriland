@@ -7392,21 +7392,24 @@
         const voterDetails = [];
 
         players.forEach((p, i) => {
+          if (!p) return;
           const optIdx = effectiveVotes[i];
-          const hasVoted = optIdx !== undefined;
+          const hasVoted = optIdx !== undefined && optIdx !== null;
 
           recommendations.push({
-            name: p.name,
+            name: p.name || `Jugador ${i + 1}`,
             seats: p.seats || 0,
-            recText: hasVoted ? (options[optIdx]?.text || "Voto") : "Sin Voto",
+            recText: hasVoted ? (options[optIdx]?.text || `Opción ${optIdx + 1}`) : "Sin Voto",
             loyalty: p.loyalty || 0,
             disloyalty: Math.max(0, 100 - (p.loyalty || 0))
           });
 
-          const distribution = options.map((_, idx) => (optIdx === idx ? p.seats : 0));
-          voterDetails.push({ name: p.name, distribution });
+          const distribution = options.map((_, idx) => (optIdx == idx ? (p.seats || 0) : 0));
+          voterDetails.push({ name: p.name || `Jugador ${i + 1}`, distribution });
 
-          if (hasVoted) tally[optIdx] += (p.seats || 0);
+          if (hasVoted && tally[optIdx] !== undefined) {
+            tally[optIdx] += (p.seats || 0);
+          }
         });
 
         const ranking = options.map((o, i) => ({ optIdx: i, text: o.text, seats: tally[i] }))
@@ -7417,8 +7420,21 @@
 
         if (!isDecree) {
           const threshold = totalSeats * 0.4;
-          if (ranking[0].seats >= threshold) {
+          const topSeats = ranking[0]?.seats || 0;
+          const tiedOptions = ranking.filter(r => r.seats === topSeats && topSeats > 0).map(r => r.optIdx);
+          const isTie = tiedOptions.length > 1;
+
+          if (topSeats >= threshold && !isTie) {
             finalOptIdx = ranking[0].optIdx;
+          } else if (isTie && topSeats >= threshold) {
+            // Voto de Calidad del Presidente (Owner)
+            const ownerVote = effectiveVotes[gs.ownerIdx];
+            // Si el voto del dueño está entre los empatados en el top, desempata a su favor
+            if (tiedOptions.includes(Number(ownerVote))) {
+              finalOptIdx = Number(ownerVote);
+            } else {
+              needsNegotiation = true; // Empate sin apoyo del presidente -> Negociación
+            }
           } else {
             needsNegotiation = true;
           }
@@ -7999,8 +8015,8 @@
       if (!gs) return null;
 
       const currentVoterIdx = gs?.voterQueue?.[gs.currentVoterPos];
-      const currentVoter = (currentVoterIdx !== undefined && gs?.players) ? gs.players[currentVoterIdx] : null;
-      const isAllVoted = gs?.votes && gs?.players && Object.keys(gs.votes).length === gs.players.length;
+      const currentVoter = (currentVoterIdx !== undefined && gs?.players) ? (gs.players[currentVoterIdx] || null) : null;
+      const isAllVoted = gs?.votes && gs?.players && Object.keys(gs.votes || {}).length >= (gs.players || []).length;
 
       if (!gs.curSit) return (
         <div className="animate-page space-y-8">
@@ -8178,8 +8194,8 @@
                           <span className="text-sm font-black uppercase tracking-[0.2em]">Atribuciones Especiales Requeridas</span>
                         </div>
                         <p className="text-slate-400 text-sm max-w-lg mx-auto leading-relaxed">
-                          {gs.players?.[gs.ownerIdx]?.isAI ?
-                            <>El Presidente <span className="text-white font-bold underline decoration-blue-500/50">{gs.players[gs.ownerIdx]?.name}</span> está ejerciendo sus facultades excepcionales para zanjar el bloqueo legislativo.</> :
+                          {gs.players?.[gs?.ownerIdx]?.isAI ?
+                            <>El Presidente <span className="text-white font-bold underline decoration-blue-500/50">{gs.players[gs.ownerIdx]?.name || "IA"}</span> está ejerciendo sus facultades excepcionales para zanjar el bloqueo legislativo.</> :
                             <>El Palacio no ha logrado el consenso tras las negociaciones. Como <span className="text-white font-bold">Presidente</span>, debes zanjar la parálisis legislativa por Decreto.</>}
                         </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
@@ -8246,7 +8262,7 @@
 
                 <div className="grid gap-4">
                   {gs.curSit.options.map((o, i) => {
-                    const isVotedByCurrent = currentVoterIdx !== undefined && gs?.votes?.[currentVoterIdx] === i;
+                    const isVotedByCurrent = currentVoterIdx !== undefined && gs?.votes?.[currentVoterIdx] == i;
                     return (
                       <button key={i}
                         onClick={() => currentVoter && !currentVoter.isAI && castVote(i)}
@@ -8259,7 +8275,7 @@
                             <span className="text-[13px] text-slate-500 uppercase font-bold tracking-widest">Impacto Presupuestario: <span className="text-slate-300">${o?.cost}M</span></span>
                           </div>
                           <div className="flex -space-x-2">
-                            {(gs?.voterQueue || []).map(vIdx => (gs?.votes && gs?.votes[vIdx] === i) ? (
+                            {(gs?.voterQueue || []).map(vIdx => (gs?.votes && gs?.votes[vIdx] == i) ? (
                               <div key={vIdx} className="w-7 h-7 rounded-full border-2 border-[#0a0b10] shadow-xl" style={{ backgroundColor: (gs?.players && gs?.players[vIdx]) ? gs?.players[vIdx]?.color : '#ccc' }} title={(gs?.players && gs?.players[vIdx]) ? gs?.players[vIdx]?.name : ''}></div>
                             ) : null)}
                           </div>
@@ -8314,7 +8330,7 @@
                       const optIdx = parseInt(optIdxStr);
                       const option = (gs.curSit && gs.curSit.options) ? gs.curSit.options[optIdx] : null;
                       if (!option) return null;
-                      const supporters = (gs.players || []).filter((p, pIdx) => (gs.negotiationSwitches?.[pIdx] ?? gs.votes?.[pIdx]) === optIdx);
+                      const supporters = (gs.players || []).filter((p, pIdx) => (gs.negotiationSwitches?.[pIdx] ?? gs.votes?.[pIdx]) == optIdx);
 
                       return (
                         <div key={i} className="bg-black/40 rounded-3xl p-6 border border-white/5 relative group">
@@ -8345,7 +8361,7 @@
                       {(gs.players || []).map((p, pIdx) => {
                         const originalVote = gs.votes?.[pIdx];
                         const currentVote = gs.negotiationSwitches?.[pIdx] ?? originalVote;
-                        const isTopOption = (gs.topOptions || []).some(entry => entry && entry[0] && parseInt(entry[0]) === currentVote);
+                        const isTopOption = (gs.topOptions || []).some(entry => entry && entry[0] && parseInt(entry[0]) == currentVote);
 
                         // Si ya está en una opción ganadora, no mostramos el formulario (ya está persuadido o es original)
                         const originallyLost = !(gs.topOptions || []).some(entry => entry && entry[0] && parseInt(entry[0]) === originalVote);
