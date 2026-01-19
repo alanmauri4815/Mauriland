@@ -7285,61 +7285,64 @@
 
       // --- AI Strategic Logic (V3) ---
       const evaluateOptionOutcome = (playerIdx, opt, budget, sectors, players, tension) => {
-        if (!opt) return null;
+        if (!opt || !players || !sectors) return null;
         const player = players[playerIdx];
         const SECTOR_UNIT = 10;
 
         // Simulación de presupuesto y sectores
-        const newBudget = budget - opt.cost;
-        const weightedImpact = sectors.reduce((acc, s) => {
-          const effect = opt.sector?.[s.name] || 0;
-          return acc + (effect * (s.weight || 1));
+        const newBudget = (budget || 0) - (opt?.cost || 0);
+        const weightedImpact = (sectors || []).reduce((acc, s) => {
+          const effect = opt?.sector?.[s?.name] || 0;
+          return acc + (effect * (s?.weight || 1));
         }, 0);
 
         // Simulación de jugadores
-        const simulatedPlayers = players.map((pl, idx) => {
-          const partyEffect = opt.party?.[pl.party] || 0;
+        const simulatedPlayers = (players || []).map((pl, idx) => {
+          if (!pl) return null;
+          const partyEffect = opt?.party?.[pl.party] || 0;
           const isOwner = idx === playerIdx;
-          const newAP = Math.max(0, Math.min(100, pl.ap + partyEffect));
+          const newAP = Math.max(0, Math.min(100, (pl.ap || 0) + partyEffect));
           const newOP = isOwner ? Math.max(0, Math.min(100, (pl.op || 50) + (weightedImpact * 0.5))) : (pl.op || 50);
 
           return { ...pl, ap: newAP, op: newOP };
         });
 
         // Tensión
-        const totalDev = (sectors || []).reduce((acc, s) => acc + Math.abs(((s.value || 500) + (opt.sector?.[s.name] || 0) * SECTOR_UNIT) - 500), 0);
+        const totalDev = (sectors || []).reduce((acc, s) => acc + Math.abs(((s?.value || 500) + (opt?.sector?.[s?.name] || 0) * SECTOR_UNIT) - 500), 0);
         const newTension = sectors.length > 0 ? (totalDev / (sectors.length * 500)) * 100 : 0;
 
         return { players: simulatedPlayers, budget: newBudget, tension: newTension, weightedImpact };
       };
 
       const calculateStrategicScore = (playerIdx, outcome) => {
-        if (!outcome) return -9999;
+        if (!outcome || !outcome.players || !outcome.players[playerIdx]) return -9999;
         const me = outcome.players[playerIdx];
 
         // 1. Mi propio beneficio (AP + OP)
-        let score = (me.ap * 1.5) + (me.op * 2);
+        let score = ((me?.ap || 0) * 1.5) + ((me?.op || 0) * 2);
 
         // 2. Penalización por presupuesto bajo
-        if (outcome.budget < 100) score -= (100 - outcome.budget) * 5;
+        if (outcome.budget < 100) score -= (100 - (outcome?.budget || 0)) * 5;
 
         // 3. Penalización por alta tensión
-        if (outcome.tension > 30) score -= (outcome.tension - 30) * 10;
+        if (outcome.tension > 30) score -= ((outcome?.tension || 0) - 30) * 10;
 
         // 4. Comparación con rivales (Queremos maximizar la brecha)
         let competitorsAvgBenefit = 0;
-        outcome.players.forEach((pl, idx) => {
-          if (idx !== playerIdx) {
-            competitorsAvgBenefit += (pl.ap * 0.8) + (pl.op * 1.2);
+        let compCount = 0;
+        (outcome.players || []).forEach((pl, idx) => {
+          if (idx !== playerIdx && pl) {
+            competitorsAvgBenefit += ((pl?.ap || 0) * 0.8) + ((pl?.op || 0) * 1.2);
+            compCount++;
           }
         });
-        competitorsAvgBenefit /= (outcome.players.length - 1 || 1);
+        competitorsAvgBenefit /= (compCount || 1);
 
         return score - competitorsAvgBenefit;
       };
 
       const calculateOptionScoreAI = (playerIdx, opt, budget, sectors, players, tension) => {
-        if (!opt || !players || !sectors) return -9999;
+        if (!opt || !players || !sectors || !players[playerIdx]) return -9999;
         const outcome = evaluateOptionOutcome(playerIdx, opt, budget, sectors, players, tension);
         return calculateStrategicScore(playerIdx, outcome);
       };
@@ -7503,14 +7506,14 @@
 
       const finalizeVote = (chosenOptIdx = null, isDecree = false) => {
         if (!isHost || !gs || !gs.curSit) return;
-        const options = gs.curSit.options || [];
-        const players = gs.players || [];
-        const totalSeats = players.reduce((sum, p) => sum + (p.seats || 0), 0);
+        const options = gs?.curSit?.options || [];
+        const players = gs?.players || [];
+        const totalSeats = players.length > 0 ? players.reduce((sum, p) => sum + (p?.seats || 0), 0) : 0;
 
         // Use negotiation switches if available, otherwise original votes
         const effectiveVotes = {};
         players.forEach((_, i) => {
-          effectiveVotes[i] = gs.negotiationSwitches?.[i] ?? gs.votes?.[i];
+          effectiveVotes[i] = gs?.negotiationSwitches?.[i] ?? gs?.votes?.[i];
         });
 
         const tally = options.map(() => 0);
@@ -7526,14 +7529,14 @@
           const rebelCount = (p.seats || 0) - loyalCount;
           const distribution = options.map(() => 0);
 
-          if (hasVoted) {
+          if (hasVoted && options.length > 0) {
             distribution[optIdx] += loyalCount;
             // Distribute rebels randomly
             for (let r = 0; r < rebelCount; r++) {
               const randIdx = Math.floor(Math.random() * options.length);
               distribution[randIdx]++;
             }
-          } else {
+          } else if (options.length > 0) {
             // No vote: all seats distributed randomly
             for (let r = 0; r < (p.seats || 0); r++) {
               const randIdx = Math.floor(Math.random() * options.length);
@@ -7570,11 +7573,11 @@
 
           if (topSeats >= threshold && !isTie) {
             finalOptIdx = ranking[0].optIdx;
-          } else if (isTie && topSeats >= threshold) {
+          } else if (isTie && topSeats >= threshold && topSeats > 0) {
             // Voto de Calidad del Presidente (Owner)
-            const ownerVote = effectiveVotes[gs.ownerIdx];
+            const ownerVote = effectiveVotes[gs?.ownerIdx];
             // Si el voto del dueño está entre los empatados en el top, desempata a su favor
-            if (tiedOptions.includes(Number(ownerVote))) {
+            if (ownerVote !== undefined && ownerVote !== null && tiedOptions.includes(Number(ownerVote))) {
               finalOptIdx = Number(ownerVote);
             } else {
               needsNegotiation = true; // Empate sin apoyo del presidente -> Negociación
@@ -7603,8 +7606,8 @@
         }
 
         const winIdx = isDecree ? chosenOptIdx : finalOptIdx;
-        const winOpt = options[winIdx];
-        const logs = [isDecree ? `Decreto: ${winOpt?.text}` : `Aprobado: ${winOpt?.text}`, ...(gs.logs || [])];
+        const winOpt = (winIdx !== null && winIdx !== undefined) ? options[winIdx] : null;
+        const logs = [isDecree ? `Decreto: ${winOpt?.text || "Desconocido"}` : `Aprobado: ${winOpt?.text || "Desconocido"}`, ...(gs?.logs || [])];
 
         const lastResults = {
           winner: winOpt?.text || "Ley Archivada",
@@ -7853,13 +7856,13 @@
       useEffect(() => {
         if (!isHost || phase !== 'playing' || !gs?.curSit || gs?.isAiProcessing) return;
         const voterQueue = gs?.voterQueue || [];
-        const voterIdx = voterQueue[gs.currentVoterPos];
+        const voterIdx = voterQueue[gs?.currentVoterPos || 0];
         const players = gs?.players || [];
-        const owner = players[gs.ownerIdx];
+        const owner = players[gs?.ownerIdx || 0] || null;
 
         // --- 1. Fase de Votación Parlamentaria (IA) ---
-        if (!gs.negotiating && !gs.showResults) {
-          if (players[voterIdx] && players[voterIdx].isAI && (gs?.votes || {})[voterIdx] === undefined) {
+        if (!gs?.negotiating && !gs?.showResults) {
+          if (voterIdx !== undefined && players[voterIdx] && players[voterIdx]?.isAI && (gs?.votes || {})[voterIdx] === undefined) {
             setGs(p => ({ ...p, isAiProcessing: true }));
             setTimeout(() => {
               setGs(prev => {
@@ -7880,9 +7883,9 @@
         }
 
         // --- 2. Fase de Negociación (IA) ---
-        if (gs.negotiating) {
+        if (gs?.negotiating) {
           const indecisosIA = players.map((p, i) => ({ p, i }))
-            .filter(({ p, i }) => p.isAI && gs.topOptions && !gs.topOptions.some(([idx]) => parseInt(idx) === gs.votes[i]) && gs.negotiationSwitches?.[i] === undefined);
+            .filter(({ p, i }) => p?.isAI && gs?.topOptions && !gs?.topOptions?.some(([idx]) => parseInt(idx) === (gs?.votes?.[i] ?? -1)) && (gs?.negotiationSwitches || {})[i] === undefined);
 
           if (indecisosIA.length > 0) {
             const nextIA = indecisosIA[0];
@@ -7901,15 +7904,15 @@
 
                 const newGs = {
                   ...prev,
-                  negotiationSwitches: { ...prev.negotiationSwitches, [nextIA.i]: bestSwitchIdx },
+                  negotiationSwitches: { ...(prev?.negotiationSwitches || {}), [nextIA.i]: bestSwitchIdx },
                   isAiProcessing: false,
-                  logs: [`${nextIA.p.name} evaluando coaliciones...`, ...(prev.logs || [])]
+                  logs: [`${nextIA?.p?.name || 'Actor'} evaluando coaliciones...`, ...(prev?.logs || [])]
                 };
                 updateRemote(newGs);
                 return newGs;
               });
             }, 1500);
-          } else if (owner?.isAI && !gs.isAiProcessing) {
+          } else if (owner?.isAI && !gs?.isAiProcessing) {
             // El Presidente IA cierra la negociación si no hay más indecisos IA
             setGs(p => ({ ...p, isAiProcessing: true }));
             setTimeout(() => {
@@ -7927,7 +7930,7 @@
             let bestIdx = topOpts[0];
             let maxS = -99999;
             topOpts.forEach(oIdx => {
-              const s = calculateOptionScoreAI(gs.ownerIdx, gs.curSit?.options[oIdx], gs.budget, gs.sectors, gs.players, gs.tension || 0);
+              const s = calculateOptionScoreAI(gs?.ownerIdx || 0, gs?.curSit?.options?.[oIdx], gs?.budget || 0, gs?.sectors || [], gs?.players || [], gs?.tension || 0);
               if (s > maxS) { maxS = s; bestIdx = oIdx; }
             });
             finalizeVote(bestIdx, true);
@@ -8003,7 +8006,7 @@
                 </div>
 
                 <div className="grid gap-4">
-                  {(gs.electionData || []).map((ed, i) => (
+                  {(gs?.electionData || []).map((ed, i) => (
                     <div key={i} className="glass p-6 rounded-3xl border border-white/5 flex flex-col md:flex-row justify-between items-center gap-6 relative overflow-hidden group">
                       <div className="absolute top-0 left-0 w-1.5 h-full opacity-50 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: ed.color }}></div>
                       <div className="flex items-center space-x-6 min-w-[200px]">
@@ -8080,7 +8083,7 @@
               <div className="animate-page glass rounded-[3.5rem] p-12 border border-white/10 max-w-3xl mx-auto text-center space-y-10">
                 <h2 className="text-5xl font-black uppercase tracking-tighter">Nombres de <span className="text-blue-500">Líderes</span></h2>
                 <div className="space-y-4 max-h-[400px] overflow-y-auto px-4 custom-scrollbar">
-                  {gs.players.map((p, i) => (
+                  {(gs?.players || []).map((p, i) => (
                     <div key={i} className="glass p-5 rounded-3xl border border-white/5 flex items-center space-x-4">
                       <div className="w-10 h-10 bg-blue-500/20 rounded-full flex items-center justify-center font-bold text-blue-400">{i + 1}</div>
                       <input
@@ -8117,7 +8120,7 @@
               <div className="animate-page glass rounded-[3.5rem] p-12 border border-white/10 max-w-5xl mx-auto space-y-12 text-center">
                 <h2 className="text-5xl font-black uppercase tracking-tighter">Asignación <span className="text-blue-500 italic">Oficial</span></h2>
                 <div className="grid grid-cols-3 gap-6">
-                  {gs.players.map((p, i) => (
+                  {(gs?.players || []).map((p, i) => (
                     <div key={i} className="glass p-6 rounded-3xl border-t-4" style={{ borderTopColor: p.color }}>
                       <h3 className="text-xl font-black">{p.name}</h3>
                       <div className="text-[10px] font-black uppercase opacity-50">{p.party}</div>
@@ -8168,7 +8171,7 @@
             <div className="space-y-6">
               <h3 className="text-sm font-black uppercase tracking-widest text-slate-500 border-b border-white/5 pb-4">Ranking de Capital Político</h3>
               <div className="space-y-4">
-                {sortedPlayers.map((p, i) => (
+                {(gs?.players || []).map((p, i) => (
                   <div key={i} className={`flex items-center justify-between p-6 rounded-3xl border transition-all ${i === 0 ? 'bg-blue-600/10 border-blue-500/30 neon-blue' : 'bg-white/5 border-white/10 opacity-80'}`}>
                     <div className="flex items-center space-x-6">
                       <div className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-xl ${i === 0 ? 'bg-blue-500 text-white' : 'bg-slate-800 text-slate-500'}`}>
@@ -8251,7 +8254,7 @@
                     </tr>
                   </thead>
                   <tbody className="text-[14px] font-medium">
-                    {gs.players.map((p, i) => (
+                    {(gs?.players || []).map((p, i) => (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                         <td className="px-6 py-4 text-slate-500 font-mono">{i + 1}</td>
                         <td className="px-6 py-4 font-bold text-white">{p.name}</td>
@@ -8334,10 +8337,10 @@
       // Safety check for gs presence
       if (!gs) return <div className="p-20 text-center opacity-50 uppercase font-black text-xs tracking-widest">Cargando Datos...</div>;
 
-      const owner = (gs.players && gs.players[gs.ownerIdx % (gs.players.length || 1)]) || null;
+      const owner = (gs?.players && gs?.players[gs?.ownerIdx % (gs?.players?.length || 1)]) || null;
       // Recuperar la situación fresca de EXTERNAL_DATA para asegurar que la URL de la imagen esté actualizada
       // y no sea un dato obsoleto del localStorage
-      const curSit = gs.curSit ? (EXTERNAL_DATA.SITUATIONS.find(s => s.id === gs.curSit.id) || gs.curSit) : null;
+      const curSit = gs?.curSit ? (EXTERNAL_DATA.SITUATIONS.find(s => s.id === gs.curSit.id) || gs.curSit) : null;
       const [imgError, setImgError] = useState(false);
 
       useEffect(() => {
@@ -8389,11 +8392,11 @@
                   </div>
                   <div className="flex-grow space-y-4">
                     <div className="space-y-1">
-                      <span className="text-blue-400 font-bold text-[13px] uppercase tracking-widest">Turno {gs.turn} / 12</span>
-                      <h2 className="text-5xl font-black tracking-tight leading-none text-white">{curSit.id}</h2>
+                      <span className="text-blue-400 font-bold text-[13px] uppercase tracking-widest">Turno {gs?.turn || 1} / 12</span>
+                      <h2 className="text-5xl font-black tracking-tight leading-none text-white">{curSit?.id || "---"}</h2>
                     </div>
                     <p className="text-base text-slate-400 font-medium leading-relaxed line-clamp-3">
-                      {curSit.description}
+                      {curSit?.description || "---"}
                     </p>
                     <div className="flex space-x-3 pt-2">
                       <button onClick={() => setTab('parliament')} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-8 py-4 rounded-2xl shadow-xl shadow-blue-900/40 transition-all active:scale-95 uppercase text-[13px] tracking-widest">Ir a Votación</button>
@@ -8404,7 +8407,7 @@
               ) : (
                 <div className="space-y-8">
                   <div className="space-y-2">
-                    <span className="text-blue-400 font-bold text-sm uppercase tracking-widest">Turno de Presidencia (Dueño): {owner ? owner.name : "..."}</span>
+                    <span className="text-blue-400 font-bold text-sm uppercase tracking-widest">Turno de Presidencia (Dueño): {owner ? owner?.name : "..."}</span>
                     <h2 className="text-6xl font-bold tracking-tight">Estado de la <span className="gradient-text">Unión</span></h2>
                   </div>
                   <div className="flex space-x-4">
@@ -8545,7 +8548,7 @@
                         </tr>
                       </thead>
                       <tbody>
-                        {(gs.lastResults?.recommendations || []).map((r, i) => (
+                        {(gs?.lastResults?.recommendations || []).map((r, i) => (
                           <tr key={i} className="border-b border-white/5">
                             <td className="px-6 py-3 text-slate-500 font-mono">{i + 1}</td>
                             <td className="px-6 py-3 font-bold text-white">{r?.name}</td>
@@ -8574,10 +8577,10 @@
                         </tr>
                       </thead>
                       <tbody className="font-mono">
-                        {(gs.lastResults?.voterDetails || []).map((det, i) => (
+                        {(gs?.lastResults?.voterDetails || []).map((det, i) => (
                           <tr key={i} className="border-b border-white/5">
                             <td className="px-8 py-3 text-slate-300 font-bold font-sans">{det?.name}</td>
-                            <td className="px-4 py-3 text-center text-slate-500">{gs.lastResults?.recommendations?.[i]?.seats}</td>
+                            <td className="px-4 py-3 text-center text-slate-500">{gs?.lastResults?.recommendations?.[i]?.seats}</td>
                             {(det?.distribution || []).map((v, j) => (
                               <td key={j} className={`text-center ${v > 0 ? "text-blue-400 font-bold" : "text-slate-800"}`}>{v}</td>
                             ))}
@@ -8588,12 +8591,12 @@
                       <tfoot className="bg-white/5 text-white font-bold">
                         <tr className="border-t border-white/20">
                           <td className="px-8 py-3 uppercase text-[12px] font-black tracking-widest text-slate-500 font-sans">TOTAL</td>
-                          <td className="px-4 py-3 text-center">{(gs.players || []).reduce((sum, p) => sum + (p?.seats || 0), 0)}</td>
-                          {(gs.curSit?.options || []).map((_, j) => {
-                            const total = (gs.lastResults?.voterDetails || []).reduce((sum, det) => sum + (det?.distribution?.[j] || 0), 0);
+                          <td className="px-4 py-3 text-center">{(gs?.players || []).reduce((sum, p) => sum + (p?.seats || 0), 0)}</td>
+                          {(gs?.curSit?.options || []).map((_, j) => {
+                            const total = (gs?.lastResults?.voterDetails || []).reduce((sum, det) => sum + (det?.distribution?.[j] || 0), 0);
                             return <td key={j} className="text-center text-emerald-400">{total}</td>;
                           })}
-                          <td className="px-8 py-3 text-right">{(gs.players || []).reduce((sum, p) => sum + (p?.seats || 0), 0)}</td>
+                          <td className="px-8 py-3 text-right">{(gs?.players || []).reduce((sum, p) => sum + (p?.seats || 0), 0)}</td>
                         </tr>
                       </tfoot>
                     </table>
@@ -8616,13 +8619,13 @@
                     </h4>
                     <div className="space-y-1">
                       <p className="text-[13px] font-black text-slate-500 uppercase tracking-widest mb-2">Ranking opciones (bancas):</p>
-                      {(gs.lastResults?.ranking || []).map((rank, i) => {
-                        const totalSeats = (gs.players || []).reduce((sum, p) => sum + (p?.seats || 0), 0);
+                      {(gs?.lastResults?.ranking || []).map((rank, i) => {
+                        const totalSeats = (gs?.players || []).reduce((sum, p) => sum + (p?.seats || 0), 0);
                         const pct = totalSeats > 0 ? ((rank.seats / totalSeats) * 100).toFixed(1) : 0;
                         return (
                           <div key={i} className="text-sm text-slate-300 flex justify-between max-w-sm">
                             <span className="truncate pr-4"><span className="text-blue-400 font-bold">Opción {rank.optIdx + 1}:</span> {rank.text}</span>
-                            <span className={`font-bold ${i === 0 ? (gs.lastResults?.needsNegotiation ? 'text-orange-400' : 'text-blue-400') : 'text-slate-500'}`}>
+                            <span className={`font-bold ${i === 0 ? (gs?.lastResults?.needsNegotiation ? 'text-orange-400' : 'text-blue-400') : 'text-slate-500'}`}>
                               {rank.seats} votos ({pct}%)
                             </span>
                           </div>
@@ -8655,8 +8658,8 @@
                             <>El Palacio no ha logrado el consenso. Como <span className="text-white font-bold">Presidente</span>, debes zanjar por Decreto.</>}
                         </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-                          {(gs.lastResults?.ranking || []).slice(0, 2).map((rank, i) => {
-                            const isAiOwner = gs.players?.[gs.ownerIdx]?.isAI;
+                          {(gs?.lastResults?.ranking || []).slice(0, 2).map((rank, i) => {
+                            const isAiOwner = gs?.players?.[gs?.ownerIdx]?.isAI;
                             return (
                               <button key={i}
                                 disabled={isAiOwner}
@@ -8737,7 +8740,7 @@
                 </div>
 
                 <div className="grid gap-4">
-                  {(gs.curSit?.options || []).map((o, i) => {
+                  {(gs?.curSit?.options || []).map((o, i) => {
                     const isVotedByCurrent = currentVoterIdx !== undefined && gs?.votes?.[currentVoterIdx] == i;
                     return (
                       <button key={i}
@@ -8762,7 +8765,7 @@
                 </div>
 
                 <div className="flex justify-between items-center pt-8 border-t border-white/5">
-                  <span className="text-[13px] text-slate-600 font-bold uppercase tracking-widest">Procedimiento Legislativo: Orden {(gs.voterQueue || []).map(v => v + 1).join('-')}</span>
+                  <span className="text-[13px] text-slate-600 font-bold uppercase tracking-widest">Procedimiento Legislativo: Orden {(gs?.voterQueue || []).map(v => v + 1).join('-')}</span>
                   {isAllVoted && (
                     <button onClick={() => finalizeVote()} className="bg-white text-black font-black px-12 py-5 rounded-2xl shadow-2xl transition-all hover:scale-105 uppercase text-sm tracking-widest active:scale-95">Someter a Escrutinio Cámara</button>
                   )}
@@ -8800,13 +8803,13 @@
 
                   {/* Cabecera: Opciones en Disputa */}
                   <div className="grid grid-cols-2 gap-6 mb-8">
-                    {(gs.topOptions || []).map((entry, i) => {
+                    {(gs?.topOptions || []).map((entry, i) => {
                       if (!entry) return null;
                       const [optIdxStr, votes] = entry;
                       const optIdx = parseInt(optIdxStr);
-                      const option = (gs.curSit && gs.curSit.options) ? gs.curSit.options[optIdx] : null;
+                      const option = (gs?.curSit && gs?.curSit?.options) ? gs?.curSit?.options[optIdx] : null;
                       if (!option) return null;
-                      const supporters = (gs.players || []).filter((p, pIdx) => (gs.negotiationSwitches?.[pIdx] ?? gs.votes?.[pIdx]) == optIdx);
+                      const supporters = (gs?.players || []).filter((p, pIdx) => (gs?.negotiationSwitches?.[pIdx] ?? gs?.votes?.[pIdx]) == optIdx);
 
                       return (
                         <div key={i} className="bg-black/40 rounded-3xl p-6 border border-white/5 relative group">
@@ -8834,13 +8837,13 @@
                   <div className="space-y-4">
                     <h4 className="text-[13px] font-black uppercase tracking-widest text-slate-500 mb-2">Diputados Indecisos (Matriz de Compromisos)</h4>
                     <div className="grid gap-3">
-                      {(gs.players || []).map((p, pIdx) => {
-                        const originalVote = gs.votes?.[pIdx];
-                        const currentVote = gs.negotiationSwitches?.[pIdx] ?? originalVote;
-                        const isTopOption = (gs.topOptions || []).some(entry => entry && entry[0] && parseInt(entry[0]) == currentVote);
+                      {(gs?.players || []).map((p, pIdx) => {
+                        const originalVote = gs?.votes?.[pIdx];
+                        const currentVote = gs?.negotiationSwitches?.[pIdx] ?? originalVote;
+                        const isTopOption = (gs?.topOptions || []).some(entry => entry && entry[0] && parseInt(entry[0]) == currentVote);
 
                         // Si ya está en una opción ganadora, no mostramos el formulario (ya está persuadido o es original)
-                        const originallyLost = !(gs.topOptions || []).some(entry => entry && entry[0] && parseInt(entry[0]) === originalVote);
+                        const originallyLost = !(gs?.topOptions || []).some(entry => entry && entry[0] && parseInt(entry[0]) === originalVote);
 
                         if (!originallyLost && currentVote === originalVote) return null; // Es un ganador original
 
@@ -8876,17 +8879,17 @@
                                 value={currentVote !== undefined && !originallyLost ? currentVote : (gs.negotiationSwitches?.[pIdx] ?? "")}
                               >
                                 <option value="">Cambiar voto a...</option>
-                                {(gs.topOptions || []).map((entry) => entry && entry[0] && (
-                                  <option key={entry[0]} value={entry[0]}>{gs.curSit.options[parseInt(entry[0])].text}</option>
+                                {(gs?.topOptions || []).map((entry) => entry && entry[0] && (
+                                  <option key={entry[0]} value={entry[0]}>{gs?.curSit?.options[parseInt(entry[0])]?.text}</option>
                                 ))}
                               </select>
 
                               {/* Selector Objetivo (Persuador) */}
                               <select className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm font-bold text-slate-300 focus:border-blue-500 outline-none" id={`target-${pIdx}`}>
                                 <option value="">Exigir compromiso a...</option>
-                                {(gs.players || []).map((target, tIdx) => {
+                                {(gs?.players || []).map((target, tIdx) => {
                                   // Solo mostrar jugadores que apoyan la opción seleccionada actualmente por el perdedor
-                                  const targetSupport = gs.negotiationSwitches?.[tIdx] ?? gs.votes?.[tIdx];
+                                  const targetSupport = gs?.negotiationSwitches?.[tIdx] ?? gs?.votes?.[tIdx];
                                   if (currentVote !== undefined && targetSupport === currentVote && tIdx !== pIdx) {
                                     return <option key={tIdx} value={tIdx}>{target ? target.name : `IA ${tIdx}`}</option>
                                   }
@@ -8929,8 +8932,8 @@
 
                                 setGs(prev => ({
                                   ...prev,
-                                  activeAgreements: [...prev.activeAgreements, newAgreement],
-                                  logs: [`Convenio: ${p?.name || 'Actor'} exige compromiso a ${(prev.players && prev.players[targetIdx]) ? prev.players[targetIdx].name : 'Actor'} ("${benefitText}")`, ...prev.logs]
+                                  activeAgreements: [...(prev?.activeAgreements || []), newAgreement],
+                                  logs: [`Convenio: ${p?.name || 'Actor'} exige compromiso a ${(prev?.players && prev?.players[targetIdx]) ? prev.players[targetIdx].name : 'Actor'} ("${benefitText}")`, ...(prev?.logs || [])]
                                 }));
                               }}
                               className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
@@ -8977,6 +8980,7 @@
     }
 
     function TabNegotiation({ gs }) {
+      const pacts = gs?.pacts || [];
       return (
         <div className="animate-page space-y-8">
           <div className="text-center space-y-2">
@@ -8984,7 +8988,7 @@
             <p className="text-slate-500 font-medium">Registro histórico de compromisos, alianzas y prebendas legislativas.</p>
           </div>
 
-          {gs.pacts.length === 0 ? (
+          {pacts.length === 0 ? (
             <div className="glass rounded-[3rem] p-16 text-center space-y-6 opacity-60">
               <Icon name="shake" className="w-16 h-16 text-slate-700 mx-auto" />
               <p className="text-slate-500 uppercase text-sm font-black tracking-widest">No hay registros de pactos en esta administración</p>
@@ -9003,7 +9007,7 @@
                   </tr>
                 </thead>
                 <tbody className="text-[14px]">
-                  {gs.pacts.map((pact, i) => (
+                  {pacts.map((pact, i) => (
                     <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors group">
                       <td className="px-8 py-6 font-bold text-white">
                         <div className="flex items-center space-x-3">
