@@ -7396,6 +7396,25 @@
           const optIdx = effectiveVotes[i];
           const hasVoted = optIdx !== undefined && optIdx !== null;
 
+          const loyalCount = Math.floor((p.seats || 0) * ((p.loyalty || 0) / 100));
+          const rebelCount = (p.seats || 0) - loyalCount;
+          const distribution = options.map(() => 0);
+
+          if (hasVoted) {
+            distribution[optIdx] += loyalCount;
+            // Distribute rebels randomly
+            for (let r = 0; r < rebelCount; r++) {
+              const randIdx = Math.floor(Math.random() * options.length);
+              distribution[randIdx]++;
+            }
+          } else {
+            // No vote: all seats distributed randomly
+            for (let r = 0; r < (p.seats || 0); r++) {
+              const randIdx = Math.floor(Math.random() * options.length);
+              distribution[randIdx]++;
+            }
+          }
+
           recommendations.push({
             name: p.name || `Jugador ${i + 1}`,
             seats: p.seats || 0,
@@ -7404,12 +7423,11 @@
             disloyalty: Math.max(0, 100 - (p.loyalty || 0))
           });
 
-          const distribution = options.map((_, idx) => (optIdx == idx ? (p.seats || 0) : 0));
           voterDetails.push({ name: p.name || `Jugador ${i + 1}`, distribution });
 
-          if (hasVoted && tally[optIdx] !== undefined) {
-            tally[optIdx] += (p.seats || 0);
-          }
+          distribution.forEach((count, idx) => {
+            if (tally[idx] !== undefined) tally[idx] += count;
+          });
         });
 
         const ranking = options.map((o, i) => ({ optIdx: i, text: o.text, seats: tally[i] }))
@@ -7486,20 +7504,92 @@
             return { ...s, value: Math.max(0, Math.min(1000, s.value + impact)) };
           });
 
-          // Apply Player/Party Impacts
-          const newPlayers = (gs.players || []).map(p => {
+          // 1. Calculate Party Alignment & Loyalty Updates
+          const intermediatePlayers = (gs.players || []).map((p, i) => {
             const pImpact = winOpt.party?.[p.party] || 0;
             const newAp = Math.max(0, Math.min(100, p.ap + pImpact));
-            const seatChange = Math.floor(pImpact / 10);
-            return { ...p, ap: newAp, seats: Math.max(5, p.seats + seatChange) };
+
+            // Alignment check
+            const myVoteIdx = effectiveVotes[i];
+            const myVoteImpact = options[myVoteIdx]?.party?.[p.party] || 0;
+            const bestPossibleImpact = Math.max(...options.map(o => o.party?.[p.party] || 0));
+
+            let loyaltyChange = 0;
+            if (myVoteIdx === undefined || myVoteIdx === null) {
+              loyaltyChange = -5; // Did not vote
+            } else if (myVoteImpact >= bestPossibleImpact && bestPossibleImpact > 0) {
+              loyaltyChange = 4; // Well aligned with best option
+            } else if (myVoteImpact > 0) {
+              loyaltyChange = 2; // Aligned but not with best
+            } else if (myVoteImpact < 0) {
+              loyaltyChange = -8; // Voted against party interests
+            } else {
+              loyaltyChange = -1; // Neutral vote
+            }
+
+            return {
+              ...p,
+              ap: newAp,
+              loyalty: Math.max(0, Math.min(100, (p.loyalty || 70) + loyaltyChange))
+            };
+          });
+
+          // 2. Pact Betrayal Check
+          const betrayedPacts = [];
+          const currentPacts = (gs.activeAgreements || []).map(a => {
+            const promisorVote = effectiveVotes[a.promisorIdx];
+            // Simplificación: Un pacto se considera traicionado si el promitente no votó
+            // por la opción que el beneficiario quería o si cambió su voto en contra.
+            // En este contexto, el promitente prometió cambiar a la opción que eligió en negociación.
+            // Si el voto efectivo no es el que prometió, es traición.
+
+            const promisedOpt = gs.negotiationSwitches?.[a.promisorIdx];
+            let betrayed = false;
+
+            if (promisedOpt !== undefined && promisorVote !== promisedOpt) {
+              betrayed = true;
+            }
+
+            if (betrayed) {
+              betrayedPacts.push(a);
+              return { ...a, status: 'Traicionado', turnResolved: gs.turn };
+            }
+            return { ...a, status: 'Cumplido', turnResolved: gs.turn };
+          });
+
+          // 3. Seat Redistribution based on Capital Político (OP + AP)
+          const totalCapital = intermediatePlayers.reduce((sum, p) => sum + (p.op || 50) + (p.ap || 50), 0);
+          const totalSeatsInParl = players.length * 20;
+
+          let updatedPlayers = intermediatePlayers.map(p => {
+            const score = (p.op || 50) + (p.ap || 50);
+            let share = totalCapital > 0 ? (score / totalCapital) : (1 / players.length);
+            let newSeats = Math.round(share * totalSeatsInParl);
+            return { ...p, seats: Math.max(5, newSeats) };
+          });
+
+          // Apply Betrayal Penalty (-5 seats to betrayer, +5 to victim)
+          betrayedPacts.forEach(pact => {
+            const betrayer = updatedPlayers[pact.promisorIdx];
+            const victim = updatedPlayers[pact.beneficiaryIdx];
+            if (betrayer && betrayer.seats > 5) {
+              betrayer.seats -= 5;
+              if (victim) victim.seats += 5;
+            }
           });
 
           newGs = {
             ...newGs,
             budget: gs.budget - (winOpt.cost || 0),
             sectors: newSectors,
-            players: newPlayers,
-            logs
+            players: updatedPlayers,
+            pacts: [...(gs.pacts || []), ...currentPacts],
+            activeAgreements: [], // Limpiar acuerdos tras la sesión
+            logs: [
+              ...logs,
+              ...betrayedPacts.map(p => `TRAICIÓN: ${p.promisorName} rompió su pacto con ${p.beneficiaryName}.`),
+              "Escrutinio General: Escaños redistribuidos por capital político."
+            ]
           };
         }
 
@@ -8017,6 +8107,10 @@
       const currentVoterIdx = gs?.voterQueue?.[gs.currentVoterPos];
       const currentVoter = (currentVoterIdx !== undefined && gs?.players) ? (gs.players[currentVoterIdx] || null) : null;
       const isAllVoted = gs?.votes && gs?.players && Object.keys(gs.votes || {}).length >= (gs.players || []).length;
+
+      const submitNegotiation = () => {
+        finalizeVote();
+      };
 
       if (!gs.curSit) return (
         <div className="animate-page space-y-8">
