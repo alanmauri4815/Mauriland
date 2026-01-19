@@ -7934,7 +7934,7 @@
       if (!gs) return null;
 
       const currentVoterIdx = gs.voterQueue && gs.voterQueue[gs.currentVoterPos];
-      const currentVoter = currentVoterIdx !== undefined ? gs.players[currentVoterIdx] : null;
+      const currentVoter = (currentVoterIdx !== undefined && gs.players) ? gs.players[currentVoterIdx] : null;
       const isAllVoted = gs.votes && gs.players && Object.keys(gs.votes).length === gs.players.length;
 
       if (!gs.curSit) return (
@@ -8194,8 +8194,8 @@
                             <span className="text-[13px] text-slate-500 uppercase font-bold tracking-widest">Impacto Presupuestario: <span className="text-slate-300">${o.cost}M</span></span>
                           </div>
                           <div className="flex -space-x-2">
-                            {gs.voterQueue && gs.voterQueue.map(vIdx => gs.votes[vIdx] === i ? (
-                              <div key={vIdx} className="w-7 h-7 rounded-full border-2 border-[#0a0b10] shadow-xl" style={{ backgroundColor: gs.players[vIdx] ? gs.players[vIdx].color : '#ccc' }} title={gs.players[vIdx] ? gs.players[vIdx].name : ''}></div>
+                            {gs.voterQueue && gs.voterQueue.map(vIdx => gs.votes && gs.votes[vIdx] === i ? (
+                              <div key={vIdx} className="w-7 h-7 rounded-full border-2 border-[#0a0b10] shadow-xl" style={{ backgroundColor: gs.players && gs.players[vIdx] ? gs.players[vIdx].color : '#ccc' }} title={gs.players && gs.players[vIdx] ? gs.players[vIdx].name : ''}></div>
                             ) : null)}
                           </div>
                         </div>
@@ -8205,7 +8205,7 @@
                 </div>
 
                 <div className="flex justify-between items-center pt-8 border-t border-white/5">
-                  <span className="text-[13px] text-slate-600 font-bold uppercase tracking-widest">Procedimiento Legislativo: Orden {gs.voterQueue.map(v => v + 1).join('-')}</span>
+                  <span className="text-[13px] text-slate-600 font-bold uppercase tracking-widest">Procedimiento Legislativo: Orden {(gs.voterQueue || []).map(v => v + 1).join('-')}</span>
                   {isAllVoted && (
                     <button onClick={() => finalizeVote()} className="bg-white text-black font-black px-12 py-5 rounded-2xl shadow-2xl transition-all hover:scale-105 uppercase text-sm tracking-widest active:scale-95">Someter a Escrutinio Cámara</button>
                   )}
@@ -8243,10 +8243,13 @@
 
                   {/* Cabecera: Opciones en Disputa */}
                   <div className="grid grid-cols-2 gap-6 mb-8">
-                    {gs.topOptions.map(([optIdxStr, votes], i) => {
+                    {(gs.topOptions || []).map((entry, i) => {
+                      if (!entry) return null;
+                      const [optIdxStr, votes] = entry;
                       const optIdx = parseInt(optIdxStr);
-                      const option = gs.curSit.options[optIdx];
-                      const supporters = gs.players.filter((p, pIdx) => (gs.negotiationSwitches?.[pIdx] ?? gs.votes[pIdx]) === optIdx);
+                      const option = (gs.curSit && gs.curSit.options) ? gs.curSit.options[optIdx] : null;
+                      if (!option) return null;
+                      const supporters = (gs.players || []).filter((p, pIdx) => (gs.negotiationSwitches?.[pIdx] ?? gs.votes?.[pIdx]) === optIdx);
 
                       return (
                         <div key={i} className="bg-black/40 rounded-3xl p-6 border border-white/5 relative group">
@@ -8274,15 +8277,13 @@
                   <div className="space-y-4">
                     <h4 className="text-[13px] font-black uppercase tracking-widest text-slate-500 mb-2">Diputados Indecisos (Matriz de Compromisos)</h4>
                     <div className="grid gap-3">
-                      {gs.players.map((p, pIdx) => {
-                        const originalVote = gs.votes[pIdx];
+                      {(gs.players || []).map((p, pIdx) => {
+                        const originalVote = gs.votes?.[pIdx];
                         const currentVote = gs.negotiationSwitches?.[pIdx] ?? originalVote;
-                        const isTopOption = gs.topOptions.some(([idx]) => parseInt(idx) === currentVote);
+                        const isTopOption = (gs.topOptions || []).some(entry => entry && entry[0] && parseInt(entry[0]) === currentVote);
 
                         // Si ya está en una opción ganadora, no mostramos el formulario (ya está persuadido o es original)
-                        // Pero el usuario dice: "Los jugadores que pierden ofrecen cambiar su voto"
-                        // Así que mostramos a los que ORIGINALMENTE perdieron (o aún no han decidido final)
-                        const originallyLost = !gs.topOptions.some(([idx]) => parseInt(idx) === originalVote);
+                        const originallyLost = !(gs.topOptions || []).some(entry => entry && entry[0] && parseInt(entry[0]) === originalVote);
 
                         if (!originallyLost && currentVote === originalVote) return null; // Es un ganador original
 
@@ -8318,19 +8319,19 @@
                                 value={currentVote !== undefined && !originallyLost ? currentVote : (gs.negotiationSwitches?.[pIdx] ?? "")}
                               >
                                 <option value="">Cambiar voto a...</option>
-                                {gs.topOptions.map(([idx]) => (
-                                  <option key={idx} value={idx}>{gs.curSit.options[parseInt(idx)].text}</option>
+                                {(gs.topOptions || []).map((entry) => entry && entry[0] && (
+                                  <option key={entry[0]} value={entry[0]}>{gs.curSit.options[parseInt(entry[0])].text}</option>
                                 ))}
                               </select>
 
                               {/* Selector Objetivo (Persuador) */}
                               <select className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm font-bold text-slate-300 focus:border-blue-500 outline-none" id={`target-${pIdx}`}>
                                 <option value="">Exigir compromiso a...</option>
-                                {gs.players.map((target, tIdx) => {
+                                {(gs.players || []).map((target, tIdx) => {
                                   // Solo mostrar jugadores que apoyan la opción seleccionada actualmente por el perdedor
-                                  const targetSupport = gs.negotiationSwitches?.[tIdx] ?? gs.votes[tIdx];
+                                  const targetSupport = gs.negotiationSwitches?.[tIdx] ?? gs.votes?.[tIdx];
                                   if (currentVote !== undefined && targetSupport === currentVote && tIdx !== pIdx) {
-                                    return <option key={tIdx} value={tIdx}>{target.name}</option>
+                                    return <option key={tIdx} value={tIdx}>{target ? target.name : `IA ${tIdx}`}</option>
                                   }
                                   return null;
                                 })}
