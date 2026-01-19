@@ -7465,6 +7465,7 @@
             showResults: false,
             voterQueue: order,
             currentVoterPos: 0,
+            isAiProcessing: false,
             logs: [`Nueva Situación: ${s.id}`, ...(prev.logs || [])]
           };
           updateRemote(updatedGs);
@@ -7585,7 +7586,8 @@
               voterDetails,
               ranking
             },
-            topOptions: ranking.slice(0, 2).map(r => [r.optIdx.toString(), r.seats])
+            topOptions: ranking.slice(0, 2).map(r => [r.optIdx.toString(), r.seats]),
+            isAiProcessing: false
           };
           setGs(negGs);
           updateRemote(negGs);
@@ -7725,6 +7727,7 @@
             hasRequestedRescue: gs.hasRequestedRescue || winOpt.isRescue,
             pacts: [...(gs.pacts || []), ...currentPacts],
             activeAgreements: [],
+            isAiProcessing: false,
             logs: [
               ...logs,
               ...betrayedPacts.map(p => `TRAICIÓN: ${p.promisorName} rompió su pacto con ${p.beneficiaryName}.`),
@@ -7832,7 +7835,8 @@
           gameOverReason,
           pendingRescueTrigger: false,
           voterQueue: [], // Se regenera en nextSituation
-          currentVoterPos: 0
+          currentVoterPos: 0,
+          isAiProcessing: false
         };
         setGs(newGs);
         updateRemote(newGs);
@@ -8474,9 +8478,16 @@
               <button onClick={() => setTab('dashboard')} className="glass bg-white/5 border border-white/10 text-slate-500 font-bold py-5 rounded-2xl hover:bg-white/10 transition-all uppercase text-[13px] tracking-widest">
                 Tablero de Control
               </button>
-              <button onClick={nextSituation} className="bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-500/20 transition-all hover:scale-105 active:scale-95 uppercase text-[13px] tracking-widest">
-                Abrir Nueva Sesión
-              </button>
+              {isHost ? (
+                <button onClick={nextSituation} className="bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-500/20 transition-all hover:scale-105 active:scale-95 uppercase text-[13px] tracking-widest">
+                  Abrir Nueva Sesión
+                </button>
+              ) : (
+                <div className="bg-white/5 border border-white/10 text-slate-600 font-bold py-5 rounded-2xl text-center flex items-center justify-center space-x-2">
+                  <Icon name="alert" className="w-4 h-4 opacity-30" />
+                  <span className="uppercase text-[10px] tracking-widest">Receso Legislativo</span>
+                </div>
+              )}
             </div>
 
             <div className="pt-8 border-t border-white/5 w-full flex justify-center space-x-8 opacity-40">
@@ -8548,7 +8559,7 @@
                         <tr className="bg-white/5 text-slate-500 uppercase text-[12px]">
                           <th className="px-8 py-3">Jugador</th>
                           <th className="px-4 py-3 text-center">Bancas</th>
-                          {gs.curSit.options.map((_, i) => <th key={i} className="text-center">V{i + 1}</th>)}
+                          {gs.curSit?.options?.map((_, i) => <th key={i} className="text-center">V{i + 1}</th>)}
                           <th className="px-8 py-3 text-right">Total</th>
                         </tr>
                       </thead>
@@ -8620,9 +8631,9 @@
                   </div>
                 </div>
 
-                {gs.lastResults?.needsNegotiation ? (
-                  gs.attemptedNegotiation ? (
-                    <div className="space-y-4 w-full">
+                <div className="mt-8">
+                  {gs.lastResults?.needsNegotiation ? (
+                    gs.attemptedNegotiation ? (
                       <div className="bg-red-500/10 border border-red-500/20 p-8 rounded-[2.5rem] text-center space-y-4">
                         <div className="flex items-center justify-center space-x-3 text-red-500">
                           <Icon name="law" className="w-6 h-6 animate-bounce" />
@@ -8630,8 +8641,8 @@
                         </div>
                         <p className="text-slate-400 text-sm max-w-lg mx-auto leading-relaxed">
                           {gs.players?.[gs?.ownerIdx]?.isAI ?
-                            <>El Presidente <span className="text-white font-bold underline decoration-blue-500/50">{gs.players[gs.ownerIdx]?.name || "IA"}</span> está ejerciendo sus facultades excepcionales para zanjar el bloqueo legislativo.</> :
-                            <>El Palacio no ha logrado el consenso tras las negociaciones. Como <span className="text-white font-bold">Presidente</span>, debes zanjar la parálisis legislativa por Decreto.</>}
+                            <>El Presidente <span className="text-white font-bold underline decoration-blue-500/50">{gs.players[gs.ownerIdx]?.name || "IA"}</span> está ejerciendo sus facultades excepcionales.</> :
+                            <>El Palacio no ha logrado el consenso. Como <span className="text-white font-bold">Presidente</span>, debes zanjar por Decreto.</>}
                         </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
                           {(gs.lastResults?.ranking || []).slice(0, 2).map((rank, i) => {
@@ -8640,7 +8651,7 @@
                               <button key={i}
                                 disabled={isAiOwner}
                                 onClick={() => finalizeVote(rank.optIdx, true)}
-                                className={`font-black py-5 rounded-2xl transition-all uppercase text-[11px] tracking-widest shadow-xl shadow-red-900/40 border-2 active:scale-95 disabled:opacity-50 ${isAiOwner ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-red-600 hover:bg-white hover:text-red-600 text-white border-transparent hover:border-red-600'}`}
+                                className={`font-black py-5 rounded-2xl transition-all uppercase text-[11px] tracking-widest shadow-xl border-2 active:scale-95 disabled:opacity-50 ${isAiOwner ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-red-600 hover:bg-white hover:text-red-600 text-white border-transparent'}`}
                               >
                                 {isAiOwner ? `Evaluando: Opción ${rank.optIdx + 1}...` : `Zanjar: Opción ${rank.optIdx + 1}`}
                               </button>
@@ -8648,13 +8659,33 @@
                           })}
                         </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="w-full">
+                        {isHost ? (
+                          <button onClick={() => {
+                            const newGs = { ...gs, showResults: false, negotiating: true, isAiProcessing: false };
+                            setGs(newGs);
+                            updateRemote(newGs);
+                          }} className="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-6 rounded-3xl shadow-xl transition-all uppercase text-sm tracking-widest animate-pulse font-sans">Abrir Mesa de Negociación</button>
+                        ) : (
+                          <div className="bg-orange-500/10 border border-orange-500/20 p-6 rounded-3xl text-center text-orange-400 font-bold uppercase text-[11px] tracking-widest italic animate-pulse">
+                            Consenso Insuficiente: Esperando que el Anfitrión abra la Negociación...
+                          </div>
+                        )}
+                      </div>
+                    )
                   ) : (
-                    <button onClick={() => setGs(p => ({ ...p, showResults: false, negotiating: true }))} className="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-6 rounded-3xl shadow-xl transition-all uppercase text-sm tracking-widest animate-pulse">Abrir Mesa de Negociación</button>
-                  )
-                ) : (
-                  <button onClick={closeResults} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-6 rounded-3xl shadow-xl shadow-blue-900/40 transition-all uppercase text-sm tracking-widest active:scale-95">Finalizar Turno y Avanzar</button>
-                )}
+                    <div className="w-full">
+                      {isHost ? (
+                        <button onClick={closeResults} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-6 rounded-3xl shadow-xl shadow-blue-900/40 transition-all uppercase text-sm tracking-widest active:scale-95">Finalizar Turno y Avanzar</button>
+                      ) : (
+                        <div className="bg-blue-500/10 border border-blue-500/20 p-6 rounded-3xl text-center text-blue-400 font-bold uppercase text-[11px] tracking-widest italic">
+                          Esperando que el Anfitrión finalice el turno...
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -8913,19 +8944,25 @@
                       <button onClick={() => setGs(p => ({ ...p, negotiating: false, curSit: null, logs: ["Moción retirada.", ...p.logs] }))} className="px-6 py-3 rounded-2xl text-[13px] font-bold uppercase text-red-500 hover:bg-red-500/10 transition-colors">
                         Retirar
                       </button>
-                      <button
-                        onClick={submitNegotiation}
-                        className="bg-emerald-500 hover:bg-emerald-400 text-white font-black px-8 py-3 rounded-2xl shadow-lg shadow-emerald-500/20 uppercase text-[13px] tracking-widest transition-all"
-                      >
-                        Someter a Votación Final
-                      </button>
+                      {isHost ? (
+                        <button
+                          onClick={submitNegotiation}
+                          className="bg-emerald-500 hover:bg-emerald-400 text-white font-black px-8 py-3 rounded-2xl shadow-lg shadow-emerald-500/20 uppercase text-[13px] tracking-widest transition-all"
+                        >
+                          Someter a Votación Final
+                        </button>
+                      ) : (
+                        <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-6 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest italic">
+                          Esperando Votación Final (Anfitrión)
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
               )}
             </div>
           </div>
-        </div>
+        </div >
       );
     }
 
