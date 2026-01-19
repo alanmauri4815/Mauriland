@@ -7187,6 +7187,11 @@
       const [roomCode, setRoomCode] = useState(null);
       const [isHost, setIsHost] = useState(false);
       const [playerId, setPlayerId] = useState(null);
+
+      // Expose to window for debugging
+      window.dbg_gs = gs;
+      window.dbg_isHost = isHost;
+      window.dbg_phase = phase;
       const [joinCode, setJoinCode] = useState('');
 
       const [gs, setGs] = useState({
@@ -7323,21 +7328,23 @@
 
       // --- Multiplayer Actions ---
       const nextSituation = () => {
-        if (!isHost || gs.curSit || gs.isGameOver) return;
+        if (!isHost || (gs && gs.curSit) || (gs && gs.isGameOver)) return;
         const situations = EXTERNAL_DATA.SITUATIONS;
         if (!situations || situations.length === 0) return alert("No hay situaciones!");
 
         const s = situations[Math.floor(Math.random() * situations.length)];
 
         setGs(prev => {
-          const order = Array.from({ length: (prev.players || []).length }).map((_, i) => (prev.ownerIdx + i) % prev.players.length);
+          if (!prev) return prev;
+          const players = prev.players || [];
+          const order = Array.from({ length: players.length }).map((_, i) => (prev.ownerIdx + i) % players.length);
           const updatedGs = {
             ...prev,
             curSit: s,
             votes: {},
             voterQueue: order,
             currentVoterPos: 0,
-            logs: [`Nueva Situación: ${s.id}`, ...prev.logs]
+            logs: [`Nueva Situación: ${s.id}`, ...(prev.logs || [])]
           };
           updateRemote(updatedGs);
           return updatedGs;
@@ -7346,14 +7353,17 @@
 
       const castVote = (optIdx) => {
         setGs(prev => {
-          const voterIdx = prev.voterQueue[prev.currentVoterPos];
+          if (!prev) return prev;
+          const voterQueue = prev.voterQueue || [];
+          const voterIdx = voterQueue[prev.currentVoterPos];
           if (voterIdx === undefined) return prev;
-          if (voterIdx !== playerId && prev.players[voterIdx]?.isHuman) return prev;
+          const players = prev.players || [];
+          if (voterIdx !== playerId && players[voterIdx]?.isHuman) return prev;
 
-          const isLastVoter = prev.currentVoterPos === prev.voterQueue.length - 1;
+          const isLastVoter = prev.currentVoterPos === voterQueue.length - 1;
           const updatedGs = {
             ...prev,
-            votes: { ...prev.votes, [voterIdx]: optIdx },
+            votes: { ...(prev.votes || {}), [voterIdx]: optIdx },
             currentVoterPos: isLastVoter ? prev.currentVoterPos : prev.currentVoterPos + 1
           };
           updateRemote(updatedGs);
@@ -7362,12 +7372,13 @@
       };
 
       const finalizeVote = () => {
-        if (!isHost || !gs.curSit) return;
-        const options = gs.curSit.options;
-        const totalSeats = gs.players.reduce((sum, p) => sum + p.seats, 0);
+        if (!isHost || !gs || !gs.curSit) return;
+        const options = gs.curSit.options || [];
+        const players = gs.players || [];
+        const totalSeats = players.reduce((sum, p) => sum + (p.seats || 0), 0);
         const tally = options.map(() => 0);
-        Object.entries(gs.votes).forEach(([pIdx, optIdx]) => {
-          tally[optIdx] += gs.players[pIdx].seats;
+        Object.entries(gs.votes || {}).forEach(([pIdx, optIdx]) => {
+          if (players[pIdx]) tally[optIdx] += (players[pIdx].seats || 0);
         });
 
         // Determine winner based on 40% majority rule
@@ -7439,9 +7450,17 @@
       };
 
       const closeResults = () => {
-        if (!isHost) return;
-        const newGs = { ...gs, showResults: false, curSit: null, ownerIdx: (gs.ownerIdx + 1) % gs.players.length, turn: gs.turn + 1 };
-        setGs(newGs); updateRemote(newGs);
+        if (!isHost || !gs) return;
+        const players = gs.players || [];
+        const newGs = {
+          ...gs,
+          showResults: false,
+          curSit: null,
+          ownerIdx: players.length > 0 ? (gs.ownerIdx + 1) % players.length : 0,
+          turn: (gs.turn || 1) + 1
+        };
+        setGs(newGs);
+        updateRemote(newGs);
         setTab('dashboard');
       };
       // AI Logic (Only Host runs it)
