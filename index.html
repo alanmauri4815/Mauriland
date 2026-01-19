@@ -7343,6 +7343,9 @@
             ...prev,
             curSit: s,
             votes: {},
+            negotiationSwitches: {},
+            lastResults: null,
+            showResults: false,
             voterQueue: order,
             currentVoterPos: 0,
             logs: [`Nueva Situación: ${s.id}`, ...(prev.logs || [])]
@@ -7372,46 +7375,105 @@
         });
       };
 
-      const finalizeVote = () => {
+      const finalizeVote = (chosenOptIdx = null, isDecree = false) => {
         if (!isHost || !gs || !gs.curSit) return;
         const options = gs.curSit.options || [];
         const players = gs.players || [];
         const totalSeats = players.reduce((sum, p) => sum + (p.seats || 0), 0);
+
+        // Use negotiation switches if available, otherwise original votes
+        const effectiveVotes = {};
+        players.forEach((_, i) => {
+          effectiveVotes[i] = gs.negotiationSwitches?.[i] ?? gs.votes?.[i];
+        });
+
         const tally = options.map(() => 0);
-        Object.entries(gs.votes || {}).forEach(([pIdx, optIdx]) => {
-          if (players[pIdx]) tally[optIdx] += (players[pIdx].seats || 0);
+        const recommendations = [];
+        const voterDetails = [];
+
+        players.forEach((p, i) => {
+          const optIdx = effectiveVotes[i];
+          const hasVoted = optIdx !== undefined;
+
+          recommendations.push({
+            name: p.name,
+            seats: p.seats || 0,
+            recText: hasVoted ? (options[optIdx]?.text || "Voto") : "Sin Voto",
+            loyalty: p.loyalty || 0,
+            disloyalty: Math.max(0, 100 - (p.loyalty || 0))
+          });
+
+          const distribution = options.map((_, idx) => (optIdx === idx ? p.seats : 0));
+          voterDetails.push({ name: p.name, distribution });
+
+          if (hasVoted) tally[optIdx] += (p.seats || 0);
         });
 
-        // Determine winner based on 40% majority rule
-        const threshold = totalSeats * 0.4;
-        let winIdx = -1;
-        let maxVotes = -1;
-        tally.forEach((v, i) => {
-          if (v >= threshold && v > maxVotes) {
-            maxVotes = v;
-            winIdx = i;
+        const ranking = options.map((o, i) => ({ optIdx: i, text: o.text, seats: tally[i] }))
+          .sort((a, b) => b.seats - a.seats);
+
+        let finalOptIdx = chosenOptIdx;
+        let needsNegotiation = false;
+
+        if (!isDecree) {
+          const threshold = totalSeats * 0.4;
+          if (ranking[0].seats >= threshold) {
+            finalOptIdx = ranking[0].optIdx;
+          } else {
+            needsNegotiation = true;
           }
-        });
+        }
 
-        const winOpt = winIdx !== -1 ? options[winIdx] : null;
-        const logs = [...gs.logs];
+        if (needsNegotiation) {
+          const negGs = {
+            ...gs,
+            showResults: true,
+            lastResults: {
+              needsNegotiation: true,
+              recommendations,
+              voterDetails,
+              ranking
+            },
+            topOptions: ranking.slice(0, 2).map(r => [r.optIdx.toString(), r.seats])
+          };
+          setGs(negGs);
+          updateRemote(negGs);
+          return;
+        }
 
-        let newGs = { ...gs, showResults: true };
+        const winIdx = isDecree ? chosenOptIdx : finalOptIdx;
+        const winOpt = options[winIdx];
+        const logs = [isDecree ? `Decreto: ${winOpt?.text}` : `Aprobado: ${winOpt?.text}`, ...(gs.logs || [])];
+
+        const lastResults = {
+          winner: winOpt?.text || "Ley Archivada",
+          winnerIdx: (winIdx ?? 0) + 1,
+          isDecree,
+          percent: Math.round(((tally[winIdx] || 0) / totalSeats) * 100),
+          recommendations,
+          voterDetails,
+          ranking
+        };
+
+        let newGs = {
+          ...gs,
+          showResults: true,
+          lastResults,
+          negotiating: false,
+          attemptedNegotiation: gs.negotiating
+        };
 
         if (winOpt) {
-          logs.unshift(`Aprobado: ${winOpt.text} (${maxVotes} votos)`);
-
           // Apply Sector Impacts
-          const newSectors = gs.sectors.map(s => {
-            const impact = winOpt.sector[s.name] || 0;
+          const newSectors = (gs.sectors || []).map(s => {
+            const impact = winOpt.sector?.[s.name] || 0;
             return { ...s, value: Math.max(0, Math.min(1000, s.value + impact)) };
           });
 
           // Apply Player/Party Impacts
-          const newPlayers = gs.players.map(p => {
-            const pImpact = winOpt.party[p.party] || 0;
+          const newPlayers = (gs.players || []).map(p => {
+            const pImpact = winOpt.party?.[p.party] || 0;
             const newAp = Math.max(0, Math.min(100, p.ap + pImpact));
-            // Modify seats based on AP changes (simple logic)
             const seatChange = Math.floor(pImpact / 10);
             return { ...p, ap: newAp, seats: Math.max(5, p.seats + seatChange) };
           });
@@ -7421,29 +7483,17 @@
             budget: gs.budget - (winOpt.cost || 0),
             sectors: newSectors,
             players: newPlayers,
-            lastResults: {
-              winner: winOpt.text,
-              winnerIdx: winIdx + 1,
-              percent: Math.round((maxVotes / totalSeats) * 100)
-            }
+            logs
           };
-        } else {
-          logs.unshift(`Rechazado: No se alcanzó la mayoría del 40%`);
-          newGs.lastResults = { winner: "Ley Archivada", winnerIdx: 0, percent: 0 };
         }
 
-        newGs.logs = logs;
-
-        // Check Game Over Conditions
+        // Check Game Over
         if (newGs.budget <= 0) {
           newGs.isGameOver = true;
-          newGs.gameOverReason = "Bancarrota Nacional: El país se ha quedado sin fondos operativos.";
-        } else if (gs.turn >= 12) {
+          newGs.gameOverReason = "Bancarrota Nacional: Fondos agotados.";
+        } else if (gs.turn >= 12 && !isDecree) {
           newGs.isGameOver = true;
-          newGs.gameOverReason = "Fin de Legislatura: Se ha cumplido el tiempo de mandato constitucional.";
-        } else if (newGs.sectors.some(s => s.value <= 100)) {
-          newGs.isGameOver = true;
-          newGs.gameOverReason = "Colapso Social: Un sector clave ha llegado a un nivel de crisis insostenible.";
+          newGs.gameOverReason = "Fin de Legislatura.";
         }
 
         setGs(newGs);
@@ -7457,6 +7507,9 @@
           ...gs,
           showResults: false,
           curSit: null,
+          votes: {},
+          negotiationSwitches: {},
+          lastResults: null,
           ownerIdx: players.length > 0 ? (gs.ownerIdx + 1) % players.length : 0,
           turn: (gs.turn || 1) + 1
         };
@@ -7464,20 +7517,30 @@
         updateRemote(newGs);
         setTab('dashboard');
       };
-      // AI Logic (Only Host runs it)
       useEffect(() => {
-        if (!isHost || phase !== 'playing' || !gs.curSit || gs.isAiProcessing) return;
-        const voterIdx = gs.voterQueue[gs.currentVoterPos];
-        if (gs.players[voterIdx] && !gs.players[voterIdx].isHuman && gs.votes[voterIdx] === undefined) {
+        if (!isHost || phase !== 'playing' || !gs?.curSit || gs?.isAiProcessing) return;
+        const voterQueue = gs?.voterQueue || [];
+        const voterIdx = voterQueue[gs.currentVoterPos];
+        const players = gs?.players || [];
+        if (players[voterIdx] && !players[voterIdx].isAI && players[voterIdx].isHuman) return;
+        if (players[voterIdx] && !players[voterIdx].isHuman && (gs?.votes || {})[voterIdx] === undefined) {
           setGs(p => ({ ...p, isAiProcessing: true }));
           setTimeout(() => {
-            const optIdx = Math.floor(Math.random() * gs.curSit.options.length);
-            const isLast = gs.currentVoterPos === gs.voterQueue.length - 1;
-            const newGs = { ...gs, votes: { ...gs.votes, [voterIdx]: optIdx }, currentVoterPos: isLast ? gs.currentVoterPos : gs.currentVoterPos + 1, isAiProcessing: false };
-            setGs(newGs); updateRemote(newGs);
+            setGs(prev => {
+              const optIdx = Math.floor(Math.random() * (prev?.curSit?.options?.length || 1));
+              const isLast = prev.currentVoterPos === (prev?.voterQueue?.length || 1) - 1;
+              const newGs = {
+                ...prev,
+                votes: { ...(prev.votes || {}), [voterIdx]: optIdx },
+                currentVoterPos: isLast ? prev.currentVoterPos : prev.currentVoterPos + 1,
+                isAiProcessing: false
+              };
+              updateRemote(newGs);
+              return newGs;
+            });
           }, 1000);
         }
-      }, [isHost, gs.currentVoterPos, gs.curSit, phase]);
+      }, [isHost, gs?.currentVoterPos, gs?.curSit, phase]);
 
       if (phase === 'lobby') {
         return (
@@ -7966,10 +8029,10 @@
             </div>
 
             <div className="pt-8 border-t border-white/5 w-full flex justify-center space-x-8 opacity-40">
-              {gs.players.map((p, i) => (
+              {(gs?.players || []).map((p, i) => (
                 <div key={i} className="flex items-center space-x-2">
-                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }}></div>
-                  <span className="text-[13px] font-bold text-slate-500 uppercase">{p.party}</span>
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p?.color || '#ccc' }}></div>
+                  <span className="text-[13px] font-bold text-slate-500 uppercase">{p?.party || 'Sin Partido'}</span>
                 </div>
               ))}
             </div>
@@ -8147,7 +8210,7 @@
           {/* Situation Hero */}
           <div className="glass p-10 rounded-[3.5rem] border-t-[8px] border-blue-600 bg-gradient-to-br from-blue-600/10 to-transparent flex flex-col md:flex-row gap-10 items-center">
             <div className="w-full md:w-1/3 aspect-video bg-white/5 rounded-[2rem] border border-white/10 flex items-center justify-center overflow-hidden relative shadow-2xl">
-              {gs.curSit.image ? (
+              {gs?.curSit?.image ? (
                 <img src={`${gs.curSit.image}.png`} alt={gs.curSit.id} className="w-full h-full object-cover opacity-80" />
               ) : (
                 <>
@@ -8159,11 +8222,11 @@
             <div className="flex-grow space-y-4">
               <div className="flex items-center space-x-4">
                 <span className="bg-blue-600 text-white px-4 py-1 rounded-full text-[13px] font-black uppercase tracking-[0.2em]">Moción Legislativa</span>
-                <span className="text-slate-400 font-bold text-[13px] uppercase">Turno: {gs.turn || 1} | Resolv.: {gs.players && gs.players[gs.ownerIdx] ? gs.players[gs.ownerIdx].name : "..."}</span>
+                <span className="text-slate-400 font-bold text-[13px] uppercase">Turno: {gs?.turn || 1} | Resolv.: {(gs?.players && gs?.players[gs?.ownerIdx]) ? gs.players[gs.ownerIdx].name : "..."}</span>
               </div>
-              <h2 className="text-6xl font-extrabold tracking-tighter leading-none">{gs.curSit.id}</h2>
+              <h2 className="text-6xl font-extrabold tracking-tighter leading-none">{gs?.curSit?.id || "Situación"}</h2>
               <p className="text-xl text-slate-300 leading-relaxed font-medium">
-                {gs.curSit.description}
+                {gs?.curSit?.description || "Cargando detalles de la moción..."}
               </p>
             </div>
           </div>
@@ -8219,20 +8282,20 @@
               <div className="glass p-8 rounded-[2.5rem]">
                 <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-6 text-center">Hemiciclo Legislativo</h3>
                 <div className="flex flex-wrap justify-center min-h-[180px] p-6 bg-black/40 rounded-[2rem] border border-white/5">
-                  {gs.players.map(p => {
-                    return Array.from({ length: p.seats }).map((_, i) => (
-                      <div key={`${p.id}-${i}`} className="parliament-dot" style={{ backgroundColor: p.color, boxShadow: `0 0 8px ${p.color}88` }}></div>
+                  {(gs?.players || []).map(p => {
+                    return Array.from({ length: (p?.seats || 0) }).map((_, i) => (
+                      <div key={`${p.id}-${i}`} className="parliament-dot" style={{ backgroundColor: p?.color || '#333', boxShadow: `0 0 8px ${(p?.color || '#333')}88` }}></div>
                     ));
                   })}
                 </div>
                 <div className="mt-8 space-y-3">
-                  {gs.players.map(p => (
-                    <div key={p.id} className="flex justify-between items-center text-[13px] font-bold text-slate-400">
+                  {(gs?.players || []).map(p => (
+                    <div key={p?.id} className="flex justify-between items-center text-[13px] font-bold text-slate-400">
                       <div className="flex items-center space-x-2">
-                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }}></div>
-                        <span>{p.party}</span>
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p?.color || '#ccc' }}></div>
+                        <span>{p?.party || 'Sin Partido'}</span>
                       </div>
-                      <span>{p.seats} / {p.loyalty.toFixed(0)}% Lealtad</span>
+                      <span>{p?.seats || 0} / {(p?.loyalty || 0).toFixed(0)}% Lealtad</span>
                     </div>
                   ))}
                 </div>
@@ -8256,8 +8319,8 @@
                       return (
                         <div key={i} className="bg-black/40 rounded-3xl p-6 border border-white/5 relative group">
                           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-50"></div>
-                          <h4 className="font-black text-2xl text-slate-200 mb-1">{option.text}</h4>
-                          <div className="text-[13px] uppercase font-bold text-slate-500 mb-4 tracking-widest">Opción {optIdx + 1} • {supporters.reduce((acc, p) => acc + p.seats, 0)} Escaños</div>
+                          <h4 className="font-black text-2xl text-slate-200 mb-1">{option?.text}</h4>
+                          <div className="text-[13px] uppercase font-bold text-slate-500 mb-4 tracking-widest">Opción {optIdx + 1} • {supporters.reduce((acc, p) => acc + (p?.seats || 0), 0)} Escaños</div>
 
                           <div className="space-y-2 max-h-[150px] overflow-y-auto custom-scrollbar">
                             {supporters.map((p, j) => (
@@ -8486,11 +8549,12 @@
     }
 
     function TabLogs({ gs }) {
+      const logs = gs?.logs || [];
       return (
         <div className="animate-page space-y-4 max-h-[750px] overflow-y-auto pr-6 custom-scrollbar">
-          {gs.logs.map((l, i) => (
+          {logs.map((l, i) => (
             <div key={i} className="glass p-8 rounded-[2rem] border-l-8 border-blue-500/30 flex space-x-6 items-center bg-gradient-to-r from-blue-500/5 to-transparent group hover:border-blue-500 transition-all">
-              <div className="text-blue-500/20 font-mono text-4xl group-hover:text-blue-500/40 transition-colors">#{gs.logs.length - i}</div>
+              <div className="text-blue-500/20 font-mono text-4xl group-hover:text-blue-500/40 transition-colors">#{logs.length - i}</div>
               <div className="space-y-2 flex-grow">
                 <p className="text-slate-200 text-xl font-bold">{l}</p>
                 <div className="flex justify-between items-center">
