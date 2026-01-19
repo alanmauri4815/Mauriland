@@ -7307,8 +7307,8 @@
         });
 
         // Tensión
-        const totalDev = sectors.reduce((acc, s) => acc + Math.abs((s.value + (opt.sector?.[s.name] || 0) * SECTOR_UNIT) - 500), 0);
-        const newTension = (totalDev / (sectors.length * 500)) * 100;
+        const totalDev = (sectors || []).reduce((acc, s) => acc + Math.abs(((s.value || 500) + (opt.sector?.[s.name] || 0) * SECTOR_UNIT) - 500), 0);
+        const newTension = sectors.length > 0 ? (totalDev / (sectors.length * 500)) * 100 : 0;
 
         return { players: simulatedPlayers, budget: newBudget, tension: newTension, weightedImpact };
       };
@@ -7339,11 +7339,13 @@
       };
 
       const calculateOptionScoreAI = (playerIdx, opt, budget, sectors, players, tension) => {
+        if (!opt || !players || !sectors) return -9999;
         const outcome = evaluateOptionOutcome(playerIdx, opt, budget, sectors, players, tension);
         return calculateStrategicScore(playerIdx, outcome);
       };
 
       const calculateBestOptionAI = (playerIdx, sit, gs) => {
+        if (!sit || !sit.options || !gs) return 0;
         const options = sit.options;
         const difficulty = gs.difficulty || 'Medio';
 
@@ -7451,11 +7453,15 @@
         if (!situations || situations.length === 0) return alert("No hay situaciones!");
 
         const s = situations[Math.floor(Math.random() * situations.length)];
+        if (!s) return;
 
         setGs(prev => {
           if (!prev) return prev;
           const players = prev.players || [];
-          const order = Array.from({ length: players.length }).map((_, i) => (prev.ownerIdx + i) % players.length);
+          if (players.length === 0) return prev;
+          const currentOwnerIdx = typeof prev.ownerIdx === 'number' ? prev.ownerIdx : 0;
+          const safeOwnerIdx = currentOwnerIdx % players.length;
+          const order = Array.from({ length: players.length }).map((_, i) => (safeOwnerIdx + i) % players.length);
           const updatedGs = {
             ...prev,
             curSit: s,
@@ -7468,7 +7474,9 @@
             isAiProcessing: false,
             logs: [`Nueva Situación: ${s.id}`, ...(prev.logs || [])]
           };
-          updateRemote(updatedGs);
+          // Move updateRemote outside in a separate useEffect or timeout if needed, 
+          // but for now, we'll keep it here but ensure updatedGs is stable.
+          setTimeout(() => updateRemote(updatedGs), 0);
           return updatedGs;
         });
       };
@@ -7827,8 +7835,8 @@
           votes: {},
           negotiationSwitches: {},
           lastResults: null,
-          ownerIdx: nextOwnerIdx,
-          turn: isGameOver ? gs.turn : (gs.turn || 1) + 1,
+          ownerIdx: nextOwnerIdx || 0,
+          turn: (isGameOver ? gs.turn : (gs.turn || 1) + 1) || 2,
           players: updatedPlayers,
           logs,
           isGameOver,
@@ -8204,11 +8212,11 @@
             </div>
             <div className="glass p-6 rounded-2xl border border-white/5 text-center">
               <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Tensión Social</span>
-              <div className="text-2xl font-black text-white bg-black/40 py-2 rounded-xl border border-white/5">{gs.tension.toFixed(1)}%</div>
+              <div className="text-2xl font-black text-white bg-black/40 py-2 rounded-xl border border-white/5">{(gs.tension || 0).toFixed(1)}%</div>
             </div>
             <div className="glass p-6 rounded-2xl border border-white/5 text-center">
               <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Clima Mediático</span>
-              <div className="text-2xl font-black text-white bg-black/40 py-2 rounded-xl border border-white/5">{gs.media.toFixed(1)}</div>
+              <div className="text-2xl font-black text-white bg-black/40 py-2 rounded-xl border border-white/5">{(gs.media || 0).toFixed(1)}</div>
             </div>
             <div className="glass p-6 rounded-2xl border border-white/5 text-center">
               <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Líder OP</span>
@@ -8252,7 +8260,7 @@
                         <td className="px-6 py-4 text-center font-mono text-emerald-400">{p.ap}</td>
                         <td className="px-6 py-4 text-center font-mono text-white">{p.op + p.ap}</td>
                         <td className="px-6 py-4 text-center font-mono text-blue-500 font-bold">{p.seats}</td>
-                        <td className="px-6 py-4 text-center font-mono text-slate-400">{p.loyalty.toFixed(0)}%</td>
+                        <td className="px-6 py-4 text-center font-mono text-slate-400">{(p.loyalty || 0).toFixed(0)}%</td>
                         <td className="px-6 py-4 text-center">
                           <div className="w-12 h-1 bg-slate-800 rounded-full mx-auto overflow-hidden">
                             <div className="h-full bg-blue-500" style={{ width: `${p.ap}%` }}></div>
@@ -8326,7 +8334,7 @@
       // Safety check for gs presence
       if (!gs) return <div className="p-20 text-center opacity-50 uppercase font-black text-xs tracking-widest">Cargando Datos...</div>;
 
-      const owner = gs.players && gs.players[gs.ownerIdx];
+      const owner = (gs.players && gs.players[gs.ownerIdx % (gs.players.length || 1)]) || null;
       // Recuperar la situación fresca de EXTERNAL_DATA para asegurar que la URL de la imagen esté actualizada
       // y no sea un dato obsoleto del localStorage
       const curSit = gs.curSit ? (EXTERNAL_DATA.SITUATIONS.find(s => s.id === gs.curSit.id) || gs.curSit) : null;
@@ -8446,12 +8454,14 @@
     }
 
     function TabParliament({ gs, castVote, finalizeVote, closeResults, isHost, playerId, setTab, nextSituation }) {
-      // Safety guards
       if (!gs) return null;
 
-      const currentVoterIdx = gs?.voterQueue?.[gs.currentVoterPos];
-      const currentVoter = (currentVoterIdx !== undefined && gs?.players) ? (gs.players[currentVoterIdx] || null) : null;
-      const isAllVoted = gs?.votes && gs?.players && Object.keys(gs.votes || {}).length >= (gs.players || []).length;
+      const players = gs.players || [];
+      const currentVoterPos = typeof gs.currentVoterPos === 'number' ? gs.currentVoterPos : 0;
+      const voterQueue = gs.voterQueue || [];
+      const currentVoterIdx = voterQueue[currentVoterPos];
+      const currentVoter = (currentVoterIdx !== undefined && players[currentVoterIdx]) ? players[currentVoterIdx] : null;
+      const isAllVoted = gs.votes && players.length > 0 && Object.keys(gs.votes).length >= players.length;
 
       const submitNegotiation = () => {
         finalizeVote();
@@ -8591,18 +8601,18 @@
                 </div>
 
                 {/* Summary Box (Estilo Alerta Imagen) */}
-                <div className={`bg-white/5 border p-8 rounded-[2.5rem] flex items-start space-x-6 relative overflow-hidden group ${gs.lastResults.needsNegotiation ? 'border-orange-500/30' : 'border-white/10'}`}>
+                <div className={`bg-white/5 border p-8 rounded-[2.5rem] flex items-start space-x-6 relative overflow-hidden group ${gs.lastResults?.needsNegotiation ? 'border-orange-500/30' : 'border-white/10'}`}>
                   <div className="absolute inset-0 bg-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                  <div className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 border ${gs.lastResults.needsNegotiation ? 'bg-orange-500/20 border-orange-500/30' : 'bg-blue-500/20 border-blue-500/30'}`}>
-                    <Icon name={gs.lastResults.needsNegotiation ? "shake" : "user"} className={`w-6 h-6 ${gs.lastResults.needsNegotiation ? 'text-orange-400' : 'text-blue-400'}`} />
+                  <div className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 border ${gs.lastResults?.needsNegotiation ? 'bg-orange-500/20 border-orange-500/30' : 'bg-blue-500/20 border-blue-500/30'}`}>
+                    <Icon name={gs.lastResults?.needsNegotiation ? "shake" : "user"} className={`w-6 h-6 ${gs.lastResults?.needsNegotiation ? 'text-orange-400' : 'text-blue-400'}`} />
                   </div>
                   <div className="space-y-4 flex-grow">
                     <h4 className="text-xl font-black text-white">
-                      {gs.lastResults.needsNegotiation ?
+                      {gs.lastResults?.needsNegotiation ?
                         "No se alcanzó la mayoría absoluta (más del 50%) requerida por el Palacio." :
-                        gs.lastResults.isDecree ?
-                          <>Resolución por <span className="text-red-500">Decreto Ejecutivo</span>. Opción: <span className="text-blue-500">{gs.lastResults.winnerIdx}</span></> :
-                          <>Recomendación cerrada. Opción ganadora: <span className="text-blue-500">{gs.lastResults.winnerIdx}</span></>}
+                        gs.lastResults?.isDecree ?
+                          <>Resolución por <span className="text-red-500">Decreto Ejecutivo</span>. Opción: <span className="text-blue-500">{gs.lastResults?.winnerIdx}</span></> :
+                          <>Recomendación cerrada. Opción ganadora: <span className="text-blue-500">{gs.lastResults?.winnerIdx}</span></>}
                     </h4>
                     <div className="space-y-1">
                       <p className="text-[13px] font-black text-slate-500 uppercase tracking-widest mb-2">Ranking opciones (bancas):</p>
@@ -8693,7 +8703,7 @@
           <div className="glass p-10 rounded-[3.5rem] border-t-[8px] border-blue-600 bg-gradient-to-br from-blue-600/10 to-transparent flex flex-col md:flex-row gap-10 items-center">
             <div className="w-full md:w-1/3 aspect-video bg-white/5 rounded-[2rem] border border-white/10 flex items-center justify-center overflow-hidden relative shadow-2xl">
               {gs?.curSit?.image ? (
-                <img src={`${gs.curSit.image}.png`} alt={gs.curSit.id} className="w-full h-full object-cover opacity-80" />
+                <img src={gs.curSit.image} alt={gs.curSit.id} className="w-full h-full object-cover opacity-80" />
               ) : (
                 <>
                   <div className="absolute inset-0 bg-gradient-to-br from-blue-500/20 to-purple-500/20 animate-pulse"></div>
@@ -8727,7 +8737,7 @@
                 </div>
 
                 <div className="grid gap-4">
-                  {gs.curSit.options.map((o, i) => {
+                  {(gs.curSit?.options || []).map((o, i) => {
                     const isVotedByCurrent = currentVoterIdx !== undefined && gs?.votes?.[currentVoterIdx] == i;
                     return (
                       <button key={i}
@@ -8764,9 +8774,9 @@
               <div className="glass p-8 rounded-[2.5rem]">
                 <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-6 text-center">Hemiciclo Legislativo</h3>
                 <div className="flex flex-wrap justify-center min-h-[180px] p-6 bg-black/40 rounded-[2rem] border border-white/5">
-                  {(gs?.players || []).map(p => {
+                  {(gs?.players || []).map((p, pIdx) => {
                     return Array.from({ length: (p?.seats || 0) }).map((_, i) => (
-                      <div key={`${p.id}-${i}`} className="parliament-dot" style={{ backgroundColor: p?.color || '#333', boxShadow: `0 0 8px ${(p?.color || '#333')}88` }}></div>
+                      <div key={`${p?.id || pIdx}-${i}`} className="parliament-dot" style={{ backgroundColor: p?.color || '#333', boxShadow: `0 0 8px ${(p?.color || '#333')}88` }}></div>
                     ));
                   })}
                 </div>
@@ -8807,8 +8817,8 @@
                           <div className="space-y-2 max-h-[150px] overflow-y-auto custom-scrollbar">
                             {supporters.map((p, j) => (
                               <div key={j} className="flex items-center space-x-2 bg-white/5 p-2 rounded-lg">
-                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }}></div>
-                                <span className="text-sm font-bold text-slate-300">{p.name}</span>
+                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p?.color || '#ccc' }}></div>
+                                <span className="text-sm font-bold text-slate-300">{p?.name || '---'}</span>
                                 {gs.negotiationSwitches?.[gs.players.indexOf(p)] !== undefined && (
                                   <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1 rounded uppercase">Nuevo</span>
                                 )}
@@ -8841,14 +8851,14 @@
                         return (
                           <div key={pIdx} className="glass p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row items-center gap-4">
                             <div className="flex items-center space-x-3 w-full md:w-1/4">
-                              <div className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm text-black" style={{ backgroundColor: p.color }}>{p.name.charAt(0)}</div>
+                              <div className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm text-black" style={{ backgroundColor: p?.color || '#ccc' }}>{(p?.name || '?').charAt(0)}</div>
                               <div>
                                 <div className="flex items-center space-x-2">
-                                  <span className="block font-bold text-base text-white">{p.name}</span>
-                                  {gs.isAiProcessing && !p.isAI && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 rounded-full border border-blue-500/30 animate-pulse">Pensando...</span>}
+                                  <span className="block font-bold text-base text-white">{p?.name || '---'}</span>
+                                  {gs.isAiProcessing && !p?.isAI && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 rounded-full border border-blue-500/30 animate-pulse">Pensando...</span>}
                                   {gs.negotiationSwitches?.[pIdx] !== undefined && <Icon name="check" className="w-3 h-3 text-emerald-500" />}
                                 </div>
-                                <span className="text-[12px] text-slate-500 uppercase font-bold tracking-widest">{p.party}</span>
+                                <span className="text-[12px] text-slate-500 uppercase font-bold tracking-widest">{p?.party || '---'}</span>
                               </div>
                             </div>
 
@@ -8907,9 +8917,9 @@
 
                                 const newAgreement = {
                                   promisorIdx: targetIdx,
-                                  promisorName: gs.players[targetIdx].name,
+                                  promisorName: (gs.players && gs.players[targetIdx]) ? gs.players[targetIdx].name : `Actor ${targetIdx}`,
                                   beneficiaryIdx: pIdx,
-                                  beneficiaryName: p.name,
+                                  beneficiaryName: p?.name || `Actor ${pIdx}`,
                                   type: benefitType, // 'align', 'block', 'support'
                                   detail: benefitText,
                                   status: 'Pendiente',
@@ -8920,7 +8930,7 @@
                                 setGs(prev => ({
                                   ...prev,
                                   activeAgreements: [...prev.activeAgreements, newAgreement],
-                                  logs: [`Convenio: ${p.name} exige compromiso a ${gs.players[targetIdx].name} ("${benefitText}")`, ...prev.logs]
+                                  logs: [`Convenio: ${p?.name || 'Actor'} exige compromiso a ${(prev.players && prev.players[targetIdx]) ? prev.players[targetIdx].name : 'Actor'} ("${benefitText}")`, ...prev.logs]
                                 }));
                               }}
                               className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
@@ -8997,7 +9007,7 @@
                     <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors group">
                       <td className="px-8 py-6 font-bold text-white">
                         <div className="flex items-center space-x-3">
-                          <div className="w-2 h-8 rounded-full" style={{ backgroundColor: gs.players[pact.promisorIdx].color }}></div>
+                          <div className="w-2 h-8 rounded-full" style={{ backgroundColor: gs.players?.[pact.promisorIdx]?.color || '#ccc' }}></div>
                           <span>{pact.promisorName}</span>
                         </div>
                       </td>
