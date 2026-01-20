@@ -7758,31 +7758,36 @@
             };
           });
 
-          // 2. Pact Betrayal Check
-          const betrayedPacts = [];
+          // 2. Pact Evaluation & Archiving
           const rawActive = gs.activeAgreements || [];
           const safeActive = Array.isArray(rawActive) ? rawActive : Object.values(rawActive);
+          const currentPacts = [];
+          const betrayedPacts = [];
 
-          const currentPacts = safeActive.map(a => {
+          safeActive.forEach(a => {
             const promisorVote = effectiveVotes[a.promisorIdx];
             const promisedOpt = gs.negotiationSwitches?.[a.promisorIdx];
-            let betrayed = false;
+            let status = 'Cumplido';
 
             if (promisedOpt !== undefined && promisorVote != promisedOpt) {
-              betrayed = true;
+              status = 'Traicionado';
+              betrayedPacts.push(a);
+            } else if (!winOpt) {
+              status = 'Archivado';
             }
 
-            if (betrayed) {
-              betrayedPacts.push(a);
-              return { ...a, status: 'Traicionado', turnResolved: gs.turn };
-            }
-            // Si la ley se archivó pero el jugador votó lo acordado, se considera Cumplido (o al menos intentado)
-            return { ...a, status: winOpt ? 'Cumplido' : 'Archivado', turnResolved: gs.turn };
+            currentPacts.push({ ...a, status, turnResolved: gs.turn });
           });
 
-          newGs = {
-            ...newGs,
-            pacts: [...(Array.isArray(gs.pacts) ? gs.pacts : Object.values(gs.pacts || {})), ...currentPacts],
+          const existingPacts = Array.isArray(gs.pacts) ? gs.pacts : Object.values(gs.pacts || {});
+
+          let newGs = {
+            ...gs,
+            showResults: true,
+            lastResults,
+            negotiating: false,
+            attemptedNegotiation: gs.negotiating,
+            pacts: [...existingPacts, ...currentPacts],
             activeAgreements: [],
             logs: [
               ...logs,
@@ -7793,60 +7798,58 @@
 
           if (winOpt) {
             const SECTOR_UNIT = 10;
-
-            // Apply Sector Impacts
-            const newSectors = (gs.sectors || []).map(s => {
+            const updatedSectors = (gs.sectors || []).map(s => {
               const impact = winOpt.sector?.[s.name] || 0;
               return { ...s, value: Math.max(0, Math.min(1000, (s.value || 500) + (impact * SECTOR_UNIT))) };
             });
 
-            // Tension & Media
-            const totalDeviation = newSectors.reduce((acc, s) => acc + Math.abs(s.value - 500), 0);
-            const maxPossibleDeviation = newSectors.length * 500;
-            const newTension = (totalDeviation / maxPossibleDeviation) * 100;
+            const totalDev = updatedSectors.reduce((acc, s) => acc + Math.abs(s.value - 500), 0);
+            const newTension = (totalDev / (updatedSectors.length * 500)) * 100;
             const newMedia = Math.min(10, Math.max(0, (gs.media || 5) + (lastResults.percent / 20) - 2));
 
-            // 3. Traition Penalty (Immediate)
+            // Apply Betrayal Penalties (immediate seat transfer)
             let finalPlayers = updatedPlayers.map(p => ({ ...p }));
-            betrayedPacts.forEach(pact => {
-              const betrayer = finalPlayers[pact.promisorIdx];
-              const victim = finalPlayers[pact.beneficiaryIdx];
-              if (betrayer && betrayer.seats > 5) {
-                betrayer.seats -= 5;
-                if (victim) victim.seats += 5;
+            betrayedPacts.forEach(p => {
+              if (finalPlayers[p.promisorIdx] && finalPlayers[p.promisorIdx].seats > 5) {
+                finalPlayers[p.promisorIdx].seats -= 5;
+                if (finalPlayers[p.beneficiaryIdx]) finalPlayers[p.beneficiaryIdx].seats += 5;
               }
             });
 
-            // 4. Bankruptcy & Rescue check
             let newBudget = gs.budget - (winOpt.cost || 0);
-            let hasRescueTriggered = false;
+            let hasRescue = false;
             let isGameOver = false;
-            let gameOverReason = "";
+            let reason = "";
 
             if (winOpt.isBankruptcy) {
               isGameOver = true;
-              gameOverReason = "Bancarrota Pública: El gobierno ha colapsado.";
+              reason = "Bancarrota Pública: El gobierno ha colapsado.";
             } else if (newBudget < 0 && !gs.hasRequestedRescue && !gs.curSit?.isRescue) {
-              hasRescueTriggered = true;
+              hasRescue = true;
             } else if (newBudget < 0 && gs.hasRequestedRescue) {
               isGameOver = true;
-              gameOverReason = "Quiebra Terminal: El país es insolvente.";
+              reason = "Quiebra Terminal: El país es insolvente.";
             }
 
             newGs = {
               ...newGs,
               budget: newBudget,
-              sectors: newSectors,
+              sectors: updatedSectors,
               players: finalPlayers,
               tension: newTension,
               media: newMedia,
-              isGameOver,
-              gameOverReason,
-              pendingRescueTrigger: hasRescueTriggered,
+              isGameOver: isGameOver || newGs.isGameOver,
+              gameOverReason: reason || newGs.gameOverReason,
+              pendingRescueTrigger: hasRescue,
               hasRequestedRescue: gs.hasRequestedRescue || winOpt.isRescue,
               isAiProcessing: false
             };
+          } else {
+            // If no winOpt, we still update players for alignment (even if no bill passed)
+            newGs.players = updatedPlayers;
+            newGs.isAiProcessing = false;
           }
+
 
           // Check Game Over
           if (newGs.budget <= 0) {
@@ -8902,7 +8905,18 @@
                       </div>
                       <div className="flex space-x-4">
                         <button onClick={() => {
-                          const newGs = { ...gs, negotiating: false, curSit: null, logs: ["Moción retirada.", ...(Array.isArray(gs.logs) ? gs.logs : Object.values(gs.logs || {}))] };
+                          const activeAgreements = Array.isArray(gs.activeAgreements) ? gs.activeAgreements : Object.values(gs.activeAgreements || {});
+                          const archivedPacts = activeAgreements.map(a => ({ ...a, status: 'Archivado', turnResolved: gs.turn }));
+                          const existingPacts = Array.isArray(gs.pacts) ? gs.pacts : Object.values(gs.pacts || {});
+
+                          const newGs = {
+                            ...gs,
+                            negotiating: false,
+                            curSit: null,
+                            pacts: [...existingPacts, ...archivedPacts],
+                            activeAgreements: [],
+                            logs: ["Moción retirada y pactos archivados.", ...(Array.isArray(gs.logs) ? gs.logs : Object.values(gs.logs || {}))]
+                          };
                           setGs(newGs);
                           updateRemote(newGs);
                         }} className="px-6 py-3 rounded-2xl text-[13px] font-bold uppercase text-red-500 hover:bg-red-500/10 transition-colors">
@@ -8996,9 +9010,9 @@
                           </td>
                           <td className="px-8 py-6 text-center">
                             <span className={`px-4 py-2 rounded-xl text-[12px] font-black uppercase tracking-widest border border-current bg-current/10 ${pact.status === 'Cumplido' ? 'text-emerald-400' :
-                              pact.status === 'Traición' ? 'text-red-500' :
-                                pact.status === 'Archivado' ? 'text-slate-400 opacity-70' :
-                                  'text-orange-400 animate-pulse'
+                                pact.status === 'Traicionado' ? 'text-red-500' :
+                                  pact.status === 'Archivado' ? 'text-slate-400 opacity-70' :
+                                    'text-orange-400 animate-pulse'
                               }`}>
                               {pact.status}
                             </span>
