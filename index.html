@@ -8580,6 +8580,53 @@
                     </h2>
                   </div>
                   <div className="mt-8">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
+                      <div className="space-y-4">
+                        <h3 className="text-sm font-black uppercase tracking-widest text-slate-500">Resumen de Recomendación</h3>
+                        <div className="space-y-2">
+                          {(gs.lastResults?.recommendations || []).map((r, i) => (
+                            <div key={i} className={`p-4 rounded-2xl flex items-center justify-between ${i === 0 ? 'bg-blue-500/20 border border-blue-500/30' : 'bg-white/5 border border-white/10'}`}>
+                              <div className="flex items-center space-x-3">
+                                <span className="text-lg font-bold">{r.optionText}</span>
+                              </div>
+                              <div className="text-right">
+                                <span className="block font-black text-xl">{r.votes.total}</span>
+                                <span className="text-[10px] uppercase font-bold text-slate-500">Bancas</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-4">
+                        <h3 className="text-sm font-black uppercase tracking-widest text-slate-500">Bancas (Desglose por Opción)</h3>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[11px] font-bold uppercase tracking-tighter">
+                            <thead>
+                              <tr className="border-b border-white/10 text-slate-500">
+                                <th className="py-2 text-left">Actor</th>
+                                {(gs.curSit?.options || []).map((_, idx) => (
+                                  <th key={idx} className="py-2 text-center">Opt {idx + 1}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(gs.lastResults?.voterDetails || []).map((vd, i) => (
+                                <tr key={i} className="border-b border-white/5">
+                                  <td className="py-3 flex items-center space-x-2">
+                                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: players[vd.playerIdx]?.color || '#ccc' }}></div>
+                                    <span className="truncate max-w-[80px]">{vd.playerName}</span>
+                                  </td>
+                                  {(vd.distribution || []).map((count, idx) => (
+                                    <td key={idx} className={`py-3 text-center ${count > 0 ? 'text-white' : 'text-slate-700'}`}>{count}</td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+
                     {gs.lastResults?.needsNegotiation ? (
                       <div className="w-full">
                         {isHost ? (
@@ -8609,6 +8656,10 @@
               <div className="flex-grow space-y-4">
                 <h2 className="text-6xl font-extrabold tracking-tighter">{gs?.curSit?.id || "Situación"}</h2>
                 <p className="text-xl text-slate-300 font-medium">{gs?.curSit?.description}</p>
+                <div className="flex items-center space-x-4">
+                  <span className="bg-blue-600 text-white px-4 py-1 rounded-full text-[13px] font-black uppercase tracking-[0.2em]">Moción Legislativa</span>
+                  <span className="text-slate-400 font-bold text-[13px] uppercase">Turno: {gs?.turn || 1} | Presidente: {(players && players[gs?.ownerIdx]) ? players[gs.ownerIdx].name : "..."}</span>
+                </div>
               </div>
             </div>
             <div className="grid lg:grid-cols-3 gap-8">
