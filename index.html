@@ -7487,7 +7487,7 @@
         }));
 
         const initialSectors = EXTERNAL_DATA.SECTORS.map(s => ({
-          name: s, value: 500, weight: 1
+          name: s, value: 500, weight: Math.floor(Math.random() * 5) + 1
         }));
 
         const newGs = {
@@ -8001,8 +8001,8 @@
                 return newGs;
               });
             }, 1500);
-          } else if (owner?.isAI && !gs?.isAiProcessing) {
-            // El Presidente IA cierra la negociación si no hay más indecisos IA
+          } else if (owner?.isAI && !gs?.isAiProcessing && !players.some(p => p.isHuman)) {
+            // Only auto-finalize if NO humans are in game. If humans exist, Host must click Finalize.
             setGs(p => ({ ...p, isAiProcessing: true }));
             setTimeout(() => {
               finalizeVote();
@@ -8011,7 +8011,7 @@
         }
 
         // --- 3. Fase de Decreto Presidencial (IA) ---
-        if (gs.showResults && gs.lastResults?.needsNegotiation && gs.attemptedNegotiation && owner?.isAI) {
+        if (gs.showResults && gs.lastResults?.needsNegotiation && gs.attemptedNegotiation && owner?.isAI && !players.some(p => p.isHuman)) {
           if (gs.isAiProcessing) return;
           setGs(p => ({ ...p, isAiProcessing: true }));
           setTimeout(() => {
@@ -8026,7 +8026,7 @@
           }, 2000);
         }
 
-      }, [isHost, gs?.currentVoterPos, gs?.curSit, gs?.negotiating, gs?.showResults, phase, gs?.isAiProcessing]);
+      }, [isHost, gs?.currentVoterPos, gs?.curSit, gs?.negotiating, gs?.showResults, phase, gs?.isAiProcessing, gs?.players]);
 
       if (phase === 'lobby') {
         return (
@@ -8897,7 +8897,11 @@
       try {
         if (!gs) return null;
         console.log("Render TabNegotiation, GS:", gs);
-        const pacts = Array.isArray(gs?.pacts) ? gs.pacts : Object.values(gs?.pacts || {});
+        const pastPacts = Array.isArray(gs?.pacts) ? gs.pacts : Object.values(gs?.pacts || {});
+        const activeAgreements = Array.isArray(gs?.activeAgreements) ? gs.activeAgreements : Object.values(gs?.activeAgreements || {});
+
+        // Merge them for display
+        const allPacts = [...activeAgreements, ...pastPacts];
         const players = gs?.players || [];
 
         return (
@@ -8907,7 +8911,7 @@
               <p className="text-slate-500 font-medium">Registro histórico de compromisos, alianzas y prebendas legislativas.</p>
             </div>
 
-            {pacts.length === 0 ? (
+            {allPacts.length === 0 ? (
               <div className="glass rounded-[3rem] p-16 text-center space-y-6 opacity-60">
                 <Icon name="shake" className="w-16 h-16 text-slate-700 mx-auto" />
                 <p className="text-slate-500 uppercase text-sm font-black tracking-widest">No hay registros de pactos en esta administración</p>
@@ -8926,7 +8930,7 @@
                     </tr>
                   </thead>
                   <tbody className="text-[14px]">
-                    {pacts.map((pact, i) => (
+                    {allPacts.map((pact, i) => (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors group">
                         <td className="px-8 py-6 font-bold text-white">
                           <div className="flex items-center space-x-3">
