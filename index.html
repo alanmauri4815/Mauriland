@@ -7542,6 +7542,10 @@
             showResults: false,
             voterQueue: order,
             currentVoterPos: 0,
+            sectors: (prev.sectors || []).map(sec => ({
+              ...sec,
+              weight: Math.floor(Math.random() * 5) + 1
+            })),
             isAiProcessing: false,
             logs: [`Nueva Situación: ${s.id}`, ...(prev.logs || [])]
           };
@@ -8001,8 +8005,8 @@
                 return newGs;
               });
             }, 1500);
-          } else if (owner?.isAI && !gs?.isAiProcessing && !players.some(p => p.isHuman)) {
-            // Only auto-finalize if NO humans are in game. If humans exist, Host must click Finalize.
+          } else if (owner?.isAI && !gs?.isAiProcessing && !players.some(p => p.isHuman || p.id === playerId)) {
+            // Robust check: only auto-finalize if NO humans (or current human player) are in game.
             setGs(p => ({ ...p, isAiProcessing: true }));
             setTimeout(() => {
               finalizeVote();
@@ -8011,7 +8015,7 @@
         }
 
         // --- 3. Fase de Decreto Presidencial (IA) ---
-        if (gs.showResults && gs.lastResults?.needsNegotiation && gs.attemptedNegotiation && owner?.isAI && !players.some(p => p.isHuman)) {
+        if (gs.showResults && gs.lastResults?.needsNegotiation && gs.attemptedNegotiation && owner?.isAI && !players.some(p => p.isHuman || p.id === playerId)) {
           if (gs.isAiProcessing) return;
           setGs(p => ({ ...p, isAiProcessing: true }));
           setTimeout(() => {
@@ -8026,7 +8030,7 @@
           }, 2000);
         }
 
-      }, [isHost, gs?.currentVoterPos, gs?.curSit, gs?.negotiating, gs?.showResults, phase, gs?.isAiProcessing, gs?.players]);
+      }, [isHost, gs?.currentVoterPos, gs?.curSit, gs?.negotiating, gs?.showResults, phase, gs?.isAiProcessing, gs?.players, playerId]);
 
       if (phase === 'lobby') {
         return (
@@ -8835,11 +8839,17 @@
                                   turnResolved: null
                                 };
 
-                                setGs(prev => ({
-                                  ...prev,
-                                  activeAgreements: [...(prev?.activeAgreements || []), newAgreement],
-                                  logs: [`Convenio: ${p?.name || 'Actor'} exige compromiso a ${(prev?.players && prev?.players[targetIdx]) ? prev.players[targetIdx].name : 'Actor'} ("${benefitText}")`, ...(prev?.logs || [])]
-                                }));
+                                const updatedAgreements = [...(gs?.activeAgreements || []), newAgreement];
+                                const updatedLogs = [`Convenio: ${p?.name || 'Actor'} exige compromiso a ${(gs?.players && gs?.players[targetIdx]) ? gs.players[targetIdx].name : 'Actor'} ("${benefitText}")`, ...(gs?.logs || [])];
+
+                                const newGs = {
+                                  ...gs,
+                                  activeAgreements: updatedAgreements,
+                                  logs: updatedLogs
+                                };
+
+                                setGs(newGs);
+                                updateRemote(newGs);
                               }}
                               className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
                               title="Formalizar Acuerdo"
