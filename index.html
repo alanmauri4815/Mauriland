@@ -7945,16 +7945,24 @@
             setGs(p => ({ ...p, isAiProcessing: true }));
             setTimeout(() => {
               setGs(prev => {
+                const capturedPos = gs?.currentVoterPos || 0;
+                const currentVoterIdx = prev?.voterQueue?.[prev.currentVoterPos];
+
+                // Safety check: only proceed if it's still THIS AI's turn
+                if (currentVoterIdx !== voterIdx || prev.votes?.[String(voterIdx)] !== undefined) {
+                  return { ...prev, isAiProcessing: false };
+                }
+
                 const optIdx = calculateBestOptionAI(voterIdx, prev.curSit, prev);
                 const isLast = prev.currentVoterPos === (prev?.voterQueue?.length || 1) - 1;
                 console.log(`AI ACTION: ${players[voterIdx].name} voted Option ${optIdx + 1}. Moving Pos ${prev.currentVoterPos} -> ${isLast ? prev.currentVoterPos : prev.currentVoterPos + 1}`);
 
                 const newGs = {
                   ...prev,
-                  votes: { ...(prev.votes || {}), [voterIdx]: optIdx },
+                  votes: { ...(prev.votes || {}), [String(voterIdx)]: optIdx },
                   currentVoterPos: isLast ? prev.currentVoterPos : prev.currentVoterPos + 1,
                   isAiProcessing: false,
-                  logs: [`${(players[voterIdx]?.name || 'IA')} ha emitido su recomendación: Opción ${optIdx + 1}`, ...(prev.logs || [])]
+                  logs: [`${(players[voterIdx]?.name || 'IA')} ha emitido su recomendación: Opción ${optIdx + 1}`, ...(prev.logs || []).slice(0, 50)]
                 };
                 updateRemote(newGs);
                 return newGs;
@@ -8145,9 +8153,9 @@
               <span className="text-2xl font-bold tracking-tighter uppercase italic">MauriLand <span className="text-[10px] font-black text-slate-500 ml-2">SALA: {roomCode}</span></span>
             </div>
             <div className="flex space-x-8 text-sm font-bold uppercase tracking-widest text-slate-400">
-              {['players', 'dashboard', 'parliament', 'negocios', 'logs'].map(t => (
+              {['players', 'dashboard', 'parliament', 'negotiation', 'logs'].map(t => (
                 <button key={t} onClick={() => setTab(t)} className={`hover:text-white transition-all ${tab === t ? 'border-b-2 border-blue-500 pb-1 text-white' : ''}`}>
-                  {t === 'players' ? 'Cámara' : t === 'dashboard' ? 'Nación' : t === 'parliament' ? 'Votos' : t === 'negocios' ? 'Pactos' : 'Actas'}
+                  {t === 'players' ? 'Cámara' : t === 'dashboard' ? 'Nación' : t === 'parliament' ? 'Votos' : t === 'negotiation' ? 'Pactos' : 'Actas'}
                 </button>
               ))}
             </div>
@@ -8627,6 +8635,15 @@
                                 </tr>
                               ))}
                             </tbody>
+                            <tfoot className="border-t-2 border-white/10 bg-white/5">
+                              <tr className="text-white font-black">
+                                <td className="py-4 px-2">TOTAL BANCAS</td>
+                                {(gs.curSit?.options || []).map((_, idx) => {
+                                  const totalForOpt = (gs.lastResults?.voterDetails || []).reduce((sum, vd) => sum + (vd.distribution?.[idx] || 0), 0);
+                                  return <td key={idx} className="py-4 text-center text-blue-400">{totalForOpt}</td>
+                                })}
+                              </tr>
+                            </tfoot>
                           </table>
                         </div>
                       </div>
@@ -8639,7 +8656,7 @@
                             const newGs = { ...gs, showResults: false, negotiating: true, isAiProcessing: false };
                             setGs(newGs);
                             updateRemote(newGs);
-                            setTimeout(() => setTab('negotiation'), 50);
+                            // We stay in 'parliament' because the negotiation UI is there
                           }} className="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-6 rounded-3xl uppercase text-sm tracking-widest">Abrir Mesa de Negociación</button>
                         ) : (
                           <div className="bg-orange-500/10 p-6 rounded-3xl text-center text-orange-400 font-bold uppercase text-[11px]">Esperando...</div>
@@ -8838,7 +8855,7 @@
                       </button>
                       {isHost ? (
                         <button
-                          onClick={submitNegotiation}
+                          onClick={() => finalizeVote()}
                           className="bg-emerald-500 hover:bg-emerald-400 text-white font-black px-8 py-3 rounded-2xl shadow-lg shadow-emerald-500/20 uppercase text-[13px] tracking-widest transition-all"
                         >
                           Someter a Votación Final
