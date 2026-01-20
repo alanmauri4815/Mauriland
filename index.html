@@ -7530,6 +7530,9 @@
             ? Array.from({ length: players.length }).map((_, i) => (safeOwnerIdx + i) % players.length)
             : [];
 
+          console.log("Turn Queue Generated:", order);
+          console.log("Players for Queue:", players.map(p => ({ id: p.id, name: p.name, isAI: p.isAI })));
+
           const updatedGs = {
             ...prev,
             curSit: s,
@@ -7927,12 +7930,20 @@
 
         // --- 1. Fase de Votación Parlamentaria (IA) ---
         if (!gs?.negotiating && !gs?.showResults) {
+          // Debug AI Logic
+          if (voterIdx !== undefined) {
+            // console.log(`Checking AI Vote: Pos=${gs.currentVoterPos}, VoterIdx=${voterIdx}, IsAI=${players[voterIdx]?.isAI}, HasVoted=${(gs?.votes || {})[voterIdx] !== undefined}, Processing=${gs.isAiProcessing}`);
+          }
+
           if (voterIdx !== undefined && players[voterIdx] && players[voterIdx]?.isAI && (gs?.votes || {})[voterIdx] === undefined) {
+            console.log(`AI TRIC: ${players[voterIdx].name} (Idx ${voterIdx}) starting vote process...`);
             setGs(p => ({ ...p, isAiProcessing: true }));
             setTimeout(() => {
               setGs(prev => {
                 const optIdx = calculateBestOptionAI(voterIdx, prev.curSit, prev);
                 const isLast = prev.currentVoterPos === (prev?.voterQueue?.length || 1) - 1;
+                console.log(`AI ACTION: ${players[voterIdx].name} voted Option ${optIdx + 1}. Moving Pos ${prev.currentVoterPos} -> ${isLast ? prev.currentVoterPos : prev.currentVoterPos + 1}`);
+
                 const newGs = {
                   ...prev,
                   votes: { ...(prev.votes || {}), [voterIdx]: optIdx },
@@ -8205,7 +8216,7 @@
                 {tab === 'players' && <TabPlayers gs={gs} />}
                 {tab === 'dashboard' && <TabDashboard gs={gs} nextSituation={nextSituation} resetGame={resetGame} setTab={setTab} isHost={isHost} />}
                 {tab === 'parliament' && <TabParliament gs={gs} castVote={castVote} finalizeVote={finalizeVote} closeResults={closeResults} isHost={isHost} playerId={playerId} setTab={setTab} nextSituation={nextSituation} setGs={setGs} updateRemote={updateRemote} />}
-                {tab === 'negocios' && <TabNegotiation gs={gs} />}
+                {tab === 'negotiation' && <TabNegotiation gs={gs} setGs={setGs} updateRemote={updateRemote} />}
                 {tab === 'logs' && <TabLogs gs={gs} />}
               </>
             )}
@@ -8744,7 +8755,7 @@
                             const newGs = { ...gs, showResults: false, negotiating: true, isAiProcessing: false };
                             setGs(newGs);
                             updateRemote(newGs);
-                            setTab('negocios');
+                            setTab('negotiation');
                           }} className="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-6 rounded-3xl shadow-xl transition-all uppercase text-sm tracking-widest animate-pulse font-sans">Abrir Mesa de Negociación</button>
                         ) : (
                           <div className="bg-orange-500/10 border border-orange-500/20 p-6 rounded-3xl text-center text-orange-400 font-bold uppercase text-[11px] tracking-widest italic animate-pulse">
@@ -9045,8 +9056,12 @@
       );
     }
 
-    function TabNegotiation({ gs }) {
+    function TabNegotiation({ gs, setGs, updateRemote }) {
+      if (!gs) return null;
+      console.log("Render TabNegotiation, GS:", gs);
       const pacts = gs?.pacts || [];
+      const players = gs?.players || [];
+
       return (
         <div className="animate-page space-y-8">
           <div className="text-center space-y-2">
