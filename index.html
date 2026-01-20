@@ -7312,7 +7312,24 @@
 
       const updateRemote = (newGs, newPhase = null) => {
         if (!roomCode) return;
-        const updateData = { gs: newGs };
+
+        // Helper to remove undefined values recursively for Firebase
+        const sanitize = (obj) => {
+          if (obj === null || obj === undefined) return null;
+          if (typeof obj !== 'object') return obj;
+          if (Array.isArray(obj)) return obj.map(sanitize);
+          const newObj = {};
+          for (const key in obj) {
+            if (obj[key] !== undefined) {
+              newObj[key] = sanitize(obj[key]);
+            }
+          }
+          return newObj;
+        };
+
+        const safeGs = sanitize(newGs);
+        const updateData = { gs: safeGs };
+
         if (newPhase) updateData.phase = newPhase;
         db.ref(`rooms/${roomCode}`).update(updateData).catch(err => {
           console.error("Firebase Update Error:", err);
