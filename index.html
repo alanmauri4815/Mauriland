@@ -8535,12 +8535,13 @@
     function TabParliament({ gs, castVote, finalizeVote, closeResults, isHost, playerId, setTab, nextSituation, setGs, updateRemote }) {
       if (!gs) return null;
 
-      const players = gs.players || [];
+      const players = gs?.players || [];
       const currentVoterPos = typeof gs.currentVoterPos === 'number' ? gs.currentVoterPos : 0;
-      const voterQueue = gs.voterQueue || [];
+      const voterQueue = gs?.voterQueue || [];
       const currentVoterIdx = voterQueue[currentVoterPos];
       const currentVoter = (currentVoterIdx !== undefined && players[currentVoterIdx]) ? players[currentVoterIdx] : null;
-      const isAllVoted = gs.votes && players.length > 0 && Object.keys(gs.votes).length >= players.length;
+      const votes = gs?.votes || {};
+      const isAllVoted = votes && players.length > 0 && Object.keys(votes).length >= players.length;
 
       const submitNegotiation = () => {
         finalizeVote();
