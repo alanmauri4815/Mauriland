@@ -8547,6 +8547,10 @@
         finalizeVote();
       };
 
+      const safeOptions = gs?.curSit?.options || [];
+      const safeVoterQueue = gs?.voterQueue || [];
+      const safeVotes = gs?.votes || {};
+
       if (!gs.curSit) return (
         <div className="animate-page space-y-8">
           <div className="glass rounded-[3rem] p-20 flex flex-col items-center justify-center text-center space-y-8 relative overflow-hidden bg-gradient-to-br from-blue-500/5 to-transparent min-h-[500px]">
@@ -8581,7 +8585,7 @@
             </div>
 
             <div className="pt-8 border-t border-white/5 w-full flex justify-center space-x-8 opacity-40">
-              {(gs?.players || []).map((p, i) => (
+              {(players || []).map((p, i) => (
                 <div key={i} className="flex items-center space-x-2">
                   <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p?.color || '#ccc' }}></div>
                   <span className="text-[13px] font-bold text-slate-500 uppercase">{p?.party || 'Sin Partido'}</span>
@@ -8649,7 +8653,7 @@
                         <tr className="bg-white/5 text-slate-500 uppercase text-[12px]">
                           <th className="px-8 py-3">Jugador</th>
                           <th className="px-4 py-3 text-center">Bancas</th>
-                          {gs.curSit?.options?.map((_, i) => <th key={i} className="text-center">V{i + 1}</th>)}
+                          {safeOptions?.map((_, i) => <th key={i} className="text-center">V{i + 1}</th>)}
                           <th className="px-8 py-3 text-right">Total</th>
                         </tr>
                       </thead>
@@ -8661,19 +8665,19 @@
                             {(det?.distribution || []).map((v, j) => (
                               <td key={j} className={`text-center ${v > 0 ? "text-blue-400 font-bold" : "text-slate-800"}`}>{v}</td>
                             ))}
-                            <td className="px-8 py-3 text-right text-slate-400">{(det?.distribution || []).reduce((a, b) => a + b, 0)}</td>
+                            <td className="px-8 py-3 text-right">{(det?.distribution || []).reduce((a, b) => a + b, 0)}</td>
                           </tr>
                         ))}
                       </tbody>
                       <tfoot className="bg-white/5 text-white font-bold">
                         <tr className="border-t border-white/20">
                           <td className="px-8 py-3 uppercase text-[12px] font-black tracking-widest text-slate-500 font-sans">TOTAL</td>
-                          <td className="px-4 py-3 text-center">{(gs?.players || []).reduce((sum, p) => sum + (p?.seats || 0), 0)}</td>
-                          {(gs?.curSit?.options || []).map((_, j) => {
+                          <td className="px-4 py-3 text-center">{(players || []).reduce((sum, p) => sum + (p?.seats || 0), 0)}</td>
+                          {(safeOptions || []).map((_, j) => {
                             const total = (gs?.lastResults?.voterDetails || []).reduce((sum, det) => sum + (det?.distribution?.[j] || 0), 0);
                             return <td key={j} className="text-center text-emerald-400">{total}</td>;
                           })}
-                          <td className="px-8 py-3 text-right">{(gs?.players || []).reduce((sum, p) => sum + (p?.seats || 0), 0)}</td>
+                          <td className="px-8 py-3 text-right">{(players || []).reduce((sum, p) => sum + (p?.seats || 0), 0)}</td>
                         </tr>
                       </tfoot>
                     </table>
@@ -8697,7 +8701,7 @@
                     <div className="space-y-1">
                       <p className="text-[13px] font-black text-slate-500 uppercase tracking-widest mb-2">Ranking opciones (bancas):</p>
                       {(gs?.lastResults?.ranking || []).map((rank, i) => {
-                        const totalSeats = (gs?.players || []).reduce((sum, p) => sum + (p?.seats || 0), 0);
+                        const totalSeats = (players || []).reduce((sum, p) => sum + (p?.seats || 0), 0);
                         const pct = totalSeats > 0 ? ((rank.seats / totalSeats) * 100).toFixed(1) : 0;
                         return (
                           <div key={i} className="text-sm text-slate-300 flex justify-between max-w-sm">
@@ -8730,13 +8734,13 @@
                           <span className="text-sm font-black uppercase tracking-[0.2em]">Atribuciones Especiales Requeridas</span>
                         </div>
                         <p className="text-slate-400 text-sm max-w-lg mx-auto leading-relaxed">
-                          {gs.players?.[gs?.ownerIdx]?.isAI ?
-                            <>El Presidente <span className="text-white font-bold underline decoration-blue-500/50">{gs.players[gs.ownerIdx]?.name || "IA"}</span> está ejerciendo sus facultades excepcionales.</> :
+                          {players?.[gs?.ownerIdx]?.isAI ?
+                            <>El Presidente <span className="text-white font-bold underline decoration-blue-500/50">{players[gs.ownerIdx]?.name || "IA"}</span> está ejerciendo sus facultades excepcionales.</> :
                             <>El Palacio no ha logrado el consenso. Como <span className="text-white font-bold">Presidente</span>, debes zanjar por Decreto.</>}
                         </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
                           {(gs?.lastResults?.ranking || []).slice(0, 2).map((rank, i) => {
-                            const isAiOwner = gs?.players?.[gs?.ownerIdx]?.isAI;
+                            const isAiOwner = players?.[gs?.ownerIdx]?.isAI;
                             return (
                               <button key={i}
                                 disabled={isAiOwner}
@@ -8799,7 +8803,7 @@
             <div className="flex-grow space-y-4">
               <div className="flex items-center space-x-4">
                 <span className="bg-blue-600 text-white px-4 py-1 rounded-full text-[13px] font-black uppercase tracking-[0.2em]">Moción Legislativa</span>
-                <span className="text-slate-400 font-bold text-[13px] uppercase">Turno: {gs?.turn || 1} | Resolv.: {(gs?.players && gs?.players[gs?.ownerIdx]) ? gs.players[gs.ownerIdx].name : "..."}</span>
+                <span className="text-slate-400 font-bold text-[13px] uppercase">Turno: {gs?.turn || 1} | Resolv.: {(players && players[gs?.ownerIdx]) ? players[gs.ownerIdx].name : "..."}</span>
               </div>
               <h2 className="text-6xl font-extrabold tracking-tighter leading-none">{gs?.curSit?.id || "Situación"}</h2>
               <p className="text-xl text-slate-300 leading-relaxed font-medium">
@@ -8822,8 +8826,8 @@
                 </div>
 
                 <div className="grid gap-4">
-                  {(gs?.curSit?.options || []).map((o, i) => {
-                    const isVotedByCurrent = currentVoterIdx !== undefined && gs?.votes?.[currentVoterIdx] == i;
+                  {(safeOptions || []).map((o, i) => {
+                    const isVotedByCurrent = currentVoterIdx !== undefined && safeVotes[currentVoterIdx] == i;
                     return (
                       <button key={i}
                         onClick={() => currentVoter && !currentVoter.isAI && castVote(i)}
@@ -8836,8 +8840,8 @@
                             <span className="text-[13px] text-slate-500 uppercase font-bold tracking-widest">Impacto Presupuestario: <span className="text-slate-300">${o?.cost}M</span></span>
                           </div>
                           <div className="flex -space-x-2">
-                            {(gs?.voterQueue || []).map(vIdx => (gs?.votes && gs?.votes[vIdx] == i) ? (
-                              <div key={vIdx} className="w-7 h-7 rounded-full border-2 border-[#0a0b10] shadow-xl" style={{ backgroundColor: (gs?.players && gs?.players[vIdx]) ? gs?.players[vIdx]?.color : '#ccc' }} title={(gs?.players && gs?.players[vIdx]) ? gs?.players[vIdx]?.name : ''}></div>
+                            {(safeVoterQueue || []).map(vIdx => (safeVotes && safeVotes[vIdx] == i) ? (
+                              <div key={vIdx} className="w-7 h-7 rounded-full border-2 border-[#0a0b10] shadow-xl" style={{ backgroundColor: (players && players[vIdx]) ? players[vIdx]?.color : '#ccc' }} title={(players && players[vIdx]) ? players[vIdx]?.name : ''}></div>
                             ) : null)}
                           </div>
                         </div>
@@ -8847,7 +8851,7 @@
                 </div>
 
                 <div className="flex justify-between items-center pt-8 border-t border-white/5">
-                  <span className="text-[13px] text-slate-600 font-bold uppercase tracking-widest">Procedimiento Legislativo: Orden {(gs?.voterQueue || []).map(v => v + 1).join('-')}</span>
+                  <span className="text-[13px] text-slate-600 font-bold uppercase tracking-widest">Procedimiento Legislativo: Orden {(safeVoterQueue || []).map(v => v + 1).join('-')}</span>
                   {isAllVoted && (
                     <button onClick={() => finalizeVote()} className="bg-white text-black font-black px-12 py-5 rounded-2xl shadow-2xl transition-all hover:scale-105 uppercase text-sm tracking-widest active:scale-95">Someter a Escrutinio Cámara</button>
                   )}
@@ -8859,7 +8863,7 @@
               <div className="glass p-8 rounded-[2.5rem]">
                 <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-6 text-center">Hemiciclo Legislativo</h3>
                 <div className="flex flex-wrap justify-center min-h-[180px] p-6 bg-black/40 rounded-[2rem] border border-white/5">
-                  {(gs?.players || []).map((p, pIdx) => {
+                  {(players || []).map((p, pIdx) => {
                     return Array.from({ length: (p?.seats || 0) }).map((_, i) => (
                       <div key={`${p?.id || pIdx}-${i}`} className="parliament-dot" style={{ backgroundColor: p?.color || '#333', boxShadow: `0 0 8px ${(p?.color || '#333')}88` }}></div>
                     ));
