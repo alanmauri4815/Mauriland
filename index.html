@@ -7542,12 +7542,12 @@
             showResults: false,
             voterQueue: order,
             currentVoterPos: 0,
-            sectors: (prev.sectors || []).map(sec => ({
+            sectors: (Array.isArray(prev.sectors) ? prev.sectors : Object.values(prev.sectors || [])).map(sec => ({
               ...sec,
               weight: Math.floor(Math.random() * 5) + 1
             })),
             isAiProcessing: false,
-            logs: [`Nueva Situación: ${s.id}`, ...(prev.logs || [])]
+            logs: [`Nueva Situación: ${s.id}`, ...(Array.isArray(prev.logs) ? prev.logs : Object.values(prev.logs || {}))]
           };
 
           console.log("Updating GS with new situation:", updatedGs);
@@ -7684,7 +7684,8 @@
 
         const winIdx = isDecree ? chosenOptIdx : finalOptIdx;
         const winOpt = (winIdx !== null && winIdx !== undefined) ? options[winIdx] : null;
-        const logs = [isDecree ? `Decreto: ${winOpt?.text || "Desconocido"}` : `Aprobado: ${winOpt?.text || "Desconocido"}`, ...(gs?.logs || [])];
+        const currentLogs = Array.isArray(gs?.logs) ? gs.logs : Object.values(gs?.logs || {});
+        const logs = [isDecree ? `Decreto: ${winOpt?.text || "Desconocido"}` : `Aprobado: ${winOpt?.text || "Desconocido"}`, ...currentLogs];
 
         const lastResults = {
           winner: winOpt?.text || "Ley Archivada",
@@ -7759,7 +7760,10 @@
 
           // 2. Pact Betrayal Check
           const betrayedPacts = [];
-          const currentPacts = (gs.activeAgreements || []).map(a => {
+          const rawActive = gs.activeAgreements || [];
+          const safeActive = Array.isArray(rawActive) ? rawActive : Object.values(rawActive);
+
+          const currentPacts = safeActive.map(a => {
             const promisorVote = effectiveVotes[a.promisorIdx];
             const promisedOpt = gs.negotiationSwitches?.[a.promisorIdx];
             let betrayed = false;
@@ -7813,7 +7817,7 @@
             gameOverReason,
             pendingRescueTrigger: hasRescueTriggered,
             hasRequestedRescue: gs.hasRequestedRescue || winOpt.isRescue,
-            pacts: [...(gs.pacts || []), ...currentPacts],
+            pacts: [...(Array.isArray(gs.pacts) ? gs.pacts : Object.values(gs.pacts || {})), ...currentPacts],
             activeAgreements: [],
             isAiProcessing: false,
             logs: [
@@ -8839,8 +8843,14 @@
                                   turnResolved: null
                                 };
 
-                                const updatedAgreements = [...(gs?.activeAgreements || []), newAgreement];
-                                const updatedLogs = [`Convenio: ${p?.name || 'Actor'} exige compromiso a ${(gs?.players && gs?.players[targetIdx]) ? gs.players[targetIdx].name : 'Actor'} ("${benefitText}")`, ...(gs?.logs || [])];
+                                const rawActive = gs?.activeAgreements || [];
+                                const safeActive = Array.isArray(rawActive) ? rawActive : Object.values(rawActive);
+
+                                const rawLogs = gs?.logs || [];
+                                const safeLogs = Array.isArray(rawLogs) ? rawLogs : Object.values(rawLogs);
+
+                                const updatedAgreements = [...safeActive, newAgreement];
+                                const updatedLogs = [`Convenio: ${p?.name || 'Actor'} exige compromiso a ${(gs?.players && gs?.players[targetIdx]) ? gs.players[targetIdx].name : 'Actor'} ("${benefitText}")`, ...safeLogs];
 
                                 const newGs = {
                                   ...gs,
