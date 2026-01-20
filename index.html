@@ -7776,1257 +7776,1283 @@
               betrayedPacts.push(a);
               return { ...a, status: 'Traicionado', turnResolved: gs.turn };
             }
-            return { ...a, status: 'Cumplido', turnResolved: gs.turn };
+            // Si la ley se archivó pero el jugador votó lo acordado, se considera Cumplido (o al menos intentado)
+            return { ...a, status: winOpt ? 'Cumplido' : 'Archivado', turnResolved: gs.turn };
           });
-
-          // 3. Traition Penalty (Immediate)
-          let finalPlayers = updatedPlayers.map(p => ({ ...p }));
-          betrayedPacts.forEach(pact => {
-            const betrayer = finalPlayers[pact.promisorIdx];
-            const victim = finalPlayers[pact.beneficiaryIdx];
-            if (betrayer && betrayer.seats > 5) {
-              betrayer.seats -= 5;
-              if (victim) victim.seats += 5;
-            }
-          });
-
-          // 4. Bankruptcy & Rescue check
-          let newBudget = gs.budget - (winOpt.cost || 0);
-          let hasRescueTriggered = false;
-          let isGameOver = false;
-          let gameOverReason = "";
-
-          if (winOpt.isBankruptcy) {
-            isGameOver = true;
-            gameOverReason = "Bancarrota Pública: El gobierno ha colapsado.";
-          } else if (newBudget < 0 && !gs.hasRequestedRescue && !gs.curSit?.isRescue) {
-            hasRescueTriggered = true;
-          } else if (newBudget < 0 && gs.hasRequestedRescue) {
-            isGameOver = true;
-            gameOverReason = "Quiebra Terminal: El país es insolvente.";
-          }
 
           newGs = {
             ...newGs,
-            budget: newBudget,
-            sectors: newSectors,
-            players: finalPlayers,
-            tension: newTension,
-            media: newMedia,
-            isGameOver,
-            gameOverReason,
-            pendingRescueTrigger: hasRescueTriggered,
-            hasRequestedRescue: gs.hasRequestedRescue || winOpt.isRescue,
             pacts: [...(Array.isArray(gs.pacts) ? gs.pacts : Object.values(gs.pacts || {})), ...currentPacts],
             activeAgreements: [],
-            isAiProcessing: false,
             logs: [
               ...logs,
               ...betrayedPacts.map(p => `TRAICIÓN: ${p.promisorName} rompió su pacto con ${p.beneficiaryName}.`),
+              ...(winOpt ? [] : ["La ley ha sido archivada por falta de consenso."])
             ]
           };
-        }
 
-        // Check Game Over
-        if (newGs.budget <= 0) {
-          newGs.isGameOver = true;
-          newGs.gameOverReason = "Bancarrota Nacional: Fondos agotados.";
-        } else if (gs.turn >= 12 && !isDecree) {
-          newGs.isGameOver = true;
-          newGs.gameOverReason = "Fin de Legislatura.";
-        }
+          if (winOpt) {
+            const SECTOR_UNIT = 10;
 
-        setGs(newGs);
-        updateRemote(newGs);
-      };
-
-      const closeResults = () => {
-        if (!isHost || !gs) return;
-        const players = gs.players || [];
-        const nextOwnerIdx = (gs.ownerIdx + 1) % (players.length || 1);
-        let updatedPlayers = [...players];
-        let logs = [...(gs.logs || [])];
-        let isEndOfRound = nextOwnerIdx === 0;
-        let electionData = null;
-        let isGameOver = gs.isGameOver;
-        let gameOverReason = gs.gameOverReason;
-        let nextSit = null;
-
-        // --- Check Rescue Situation ---
-        if (gs.pendingRescueTrigger) {
-          nextSit = EXTERNAL_DATA.RESCUE_SITUATION;
-          logs.unshift("ALERTA: Crisis de Deuda. El Fondo Internacional ha intervenido.");
-        }
-
-        // --- Check End of Legislature ---
-        if (gs.turn >= 12 && !gs.pendingRescueTrigger) {
-          isGameOver = true;
-          gameOverReason = "Legislatura Cumplida: Se ha completado el periodo constitucional de 12 turnos.";
-        }
-
-        // --- End of Round: Election Recount ---
-        if (isEndOfRound && !isGameOver && !gs.pendingRescueTrigger) {
-          logs.unshift("--- Fin de Ronda: Recuento Electoral ---");
-          const totalSeats = updatedPlayers.length * 20;
-          const totalOP = updatedPlayers.reduce((sum, pl) => sum + Math.max(0, pl.op || 50), 0);
-
-          if (totalOP > 0) {
-            let assignedSeats = 0;
-            const fractions = [];
-            updatedPlayers = updatedPlayers.map((pl, idx) => {
-              const exact = (Math.max(0, pl.op || 50) / totalOP) * totalSeats;
-              const whole = Math.floor(exact);
-              fractions.push({ idx, frac: exact - whole });
-              assignedSeats += whole;
-              return { ...pl, oldSeats: pl.seats, seats: whole };
+            // Apply Sector Impacts
+            const newSectors = (gs.sectors || []).map(s => {
+              const impact = winOpt.sector?.[s.name] || 0;
+              return { ...s, value: Math.max(0, Math.min(1000, (s.value || 500) + (impact * SECTOR_UNIT))) };
             });
-            const remaining = totalSeats - assignedSeats;
-            fractions.sort((a, b) => b.frac - a.frac);
-            for (let i = 0; i < remaining; i++) {
-              updatedPlayers[fractions[i].idx].seats += 1;
-            }
-            updatedPlayers.forEach(pl => {
-              if (pl.seats !== pl.oldSeats) {
-                logs.unshift(`${pl.party}: ${pl.oldSeats} ➔ ${pl.seats} bancas`);
+
+            // Tension & Media
+            const totalDeviation = newSectors.reduce((acc, s) => acc + Math.abs(s.value - 500), 0);
+            const maxPossibleDeviation = newSectors.length * 500;
+            const newTension = (totalDeviation / maxPossibleDeviation) * 100;
+            const newMedia = Math.min(10, Math.max(0, (gs.media || 5) + (lastResults.percent / 20) - 2));
+
+            // 3. Traition Penalty (Immediate)
+            let finalPlayers = updatedPlayers.map(p => ({ ...p }));
+            betrayedPacts.forEach(pact => {
+              const betrayer = finalPlayers[pact.promisorIdx];
+              const victim = finalPlayers[pact.beneficiaryIdx];
+              if (betrayer && betrayer.seats > 5) {
+                betrayer.seats -= 5;
+                if (victim) victim.seats += 5;
               }
             });
-          }
 
-          // Adjust Loyalty based on AP
-          updatedPlayers = updatedPlayers.map(pl => {
-            const oldLoyalty = pl.loyalty || 70;
-            const delta = ((pl.ap || 50) - 50) / 2; // In V3 it was (ap - 100) / 2 where ap was 0-1000, so (ap/10 - 50)/2
-            const newLoyalty = Math.max(40, Math.min(100, 70 + delta));
-            if (Math.round(newLoyalty) !== Math.round(oldLoyalty)) {
-              logs.unshift(`${pl.name}: Lealtad ajustada a ${Math.round(newLoyalty)}%`);
+            // 4. Bankruptcy & Rescue check
+            let newBudget = gs.budget - (winOpt.cost || 0);
+            let hasRescueTriggered = false;
+            let isGameOver = false;
+            let gameOverReason = "";
+
+            if (winOpt.isBankruptcy) {
+              isGameOver = true;
+              gameOverReason = "Bancarrota Pública: El gobierno ha colapsado.";
+            } else if (newBudget < 0 && !gs.hasRequestedRescue && !gs.curSit?.isRescue) {
+              hasRescueTriggered = true;
+            } else if (newBudget < 0 && gs.hasRequestedRescue) {
+              isGameOver = true;
+              gameOverReason = "Quiebra Terminal: El país es insolvente.";
             }
-            return { ...pl, loyalty: newLoyalty };
-          });
 
-          electionData = updatedPlayers.map(pl => ({
-            name: pl.name, party: pl.party, op: pl.op, ap: pl.ap,
-            oldSeats: pl.oldSeats, newSeats: pl.seats,
-            loyalty: pl.loyalty, color: pl.color
-          }));
-        }
+            newGs = {
+              ...newGs,
+              budget: newBudget,
+              sectors: newSectors,
+              players: finalPlayers,
+              tension: newTension,
+              media: newMedia,
+              isGameOver,
+              gameOverReason,
+              pendingRescueTrigger: hasRescueTriggered,
+              hasRequestedRescue: gs.hasRequestedRescue || winOpt.isRescue,
+              isAiProcessing: false
+            };
+          }
 
-        const newGs = {
-          ...gs,
-          showResults: false,
-          showElection: isEndOfRound && !isGameOver && !gs.pendingRescueTrigger,
-          electionData,
-          curSit: nextSit,
-          votes: {},
-          negotiationSwitches: {},
-          lastResults: null,
-          ownerIdx: nextOwnerIdx || 0,
-          turn: (isGameOver ? gs.turn : (gs.turn || 1) + 1) || 2,
-          players: updatedPlayers,
-          logs,
-          isGameOver,
-          gameOverReason,
-          pendingRescueTrigger: false,
-          voterQueue: [], // Se regenera en nextSituation
-          currentVoterPos: 0,
-          isAiProcessing: false
+          // Check Game Over
+          if (newGs.budget <= 0) {
+            newGs.isGameOver = true;
+            newGs.gameOverReason = "Bancarrota Nacional: Fondos agotados.";
+          } else if (gs.turn >= 12 && !isDecree) {
+            newGs.isGameOver = true;
+            newGs.gameOverReason = "Fin de Legislatura.";
+          }
+
+          setGs(newGs);
+          updateRemote(newGs);
         };
-        setGs(newGs);
-        updateRemote(newGs);
-        setTab('dashboard');
-      };
-      useEffect(() => {
-        if (!isHost || phase !== 'playing' || !gs?.curSit || gs?.isAiProcessing) return;
-        const voterQueue = gs?.voterQueue || [];
-        const voterIdx = voterQueue[gs?.currentVoterPos || 0];
-        const players = gs?.players || [];
-        const owner = players[gs?.ownerIdx || 0] || null;
 
-        // --- 1. Fase de Votación Parlamentaria (IA) ---
-        if (!gs?.negotiating && !gs?.showResults) {
-          // Debug AI Logic
-          if (voterIdx !== undefined) {
-            // console.log(`Checking AI Vote: Pos=${gs.currentVoterPos}, VoterIdx=${voterIdx}, IsAI=${players[voterIdx]?.isAI}, HasVoted=${(gs?.votes || {})[voterIdx] !== undefined}, Processing=${gs.isAiProcessing}`);
+        const closeResults = () => {
+          if (!isHost || !gs) return;
+          const players = gs.players || [];
+          const nextOwnerIdx = (gs.ownerIdx + 1) % (players.length || 1);
+          let updatedPlayers = [...players];
+          let logs = [...(gs.logs || [])];
+          let isEndOfRound = nextOwnerIdx === 0;
+          let electionData = null;
+          let isGameOver = gs.isGameOver;
+          let gameOverReason = gs.gameOverReason;
+          let nextSit = null;
+
+          // --- Check Rescue Situation ---
+          if (gs.pendingRescueTrigger) {
+            nextSit = EXTERNAL_DATA.RESCUE_SITUATION;
+            logs.unshift("ALERTA: Crisis de Deuda. El Fondo Internacional ha intervenido.");
           }
 
-          if (voterIdx !== undefined && players[voterIdx] && players[voterIdx]?.isAI && (gs?.votes || {})[voterIdx] === undefined) {
-            console.log(`AI TRIC: ${players[voterIdx].name} (Idx ${voterIdx}) starting vote process...`);
-            setGs(p => ({ ...p, isAiProcessing: true }));
-            setTimeout(() => {
-              setGs(prev => {
-                const capturedPos = gs?.currentVoterPos || 0;
-                const currentVoterIdx = prev?.voterQueue?.[prev.currentVoterPos];
+          // --- Check End of Legislature ---
+          if (gs.turn >= 12 && !gs.pendingRescueTrigger) {
+            isGameOver = true;
+            gameOverReason = "Legislatura Cumplida: Se ha completado el periodo constitucional de 12 turnos.";
+          }
 
-                // Safety check: only proceed if it's still THIS AI's turn
-                if (currentVoterIdx !== voterIdx || prev.votes?.[String(voterIdx)] !== undefined) {
-                  return { ...prev, isAiProcessing: false };
+          // --- End of Round: Election Recount ---
+          if (isEndOfRound && !isGameOver && !gs.pendingRescueTrigger) {
+            logs.unshift("--- Fin de Ronda: Recuento Electoral ---");
+            const totalSeats = updatedPlayers.length * 20;
+            const totalOP = updatedPlayers.reduce((sum, pl) => sum + Math.max(0, pl.op || 50), 0);
+
+            if (totalOP > 0) {
+              let assignedSeats = 0;
+              const fractions = [];
+              updatedPlayers = updatedPlayers.map((pl, idx) => {
+                const exact = (Math.max(0, pl.op || 50) / totalOP) * totalSeats;
+                const whole = Math.floor(exact);
+                fractions.push({ idx, frac: exact - whole });
+                assignedSeats += whole;
+                return { ...pl, oldSeats: pl.seats, seats: whole };
+              });
+              const remaining = totalSeats - assignedSeats;
+              fractions.sort((a, b) => b.frac - a.frac);
+              for (let i = 0; i < remaining; i++) {
+                updatedPlayers[fractions[i].idx].seats += 1;
+              }
+              updatedPlayers.forEach(pl => {
+                if (pl.seats !== pl.oldSeats) {
+                  logs.unshift(`${pl.party}: ${pl.oldSeats} ➔ ${pl.seats} bancas`);
                 }
-
-                const optIdx = calculateBestOptionAI(voterIdx, prev.curSit, prev);
-                const isLast = prev.currentVoterPos === (prev?.voterQueue?.length || 1) - 1;
-                console.log(`AI ACTION: ${players[voterIdx].name} voted Option ${optIdx + 1}. Moving Pos ${prev.currentVoterPos} -> ${isLast ? prev.currentVoterPos : prev.currentVoterPos + 1}`);
-
-                const newGs = {
-                  ...prev,
-                  votes: { ...(prev.votes || {}), [String(voterIdx)]: optIdx },
-                  currentVoterPos: isLast ? prev.currentVoterPos : prev.currentVoterPos + 1,
-                  isAiProcessing: false,
-                  logs: [`${(players[voterIdx]?.name || 'IA')} ha emitido su recomendación: Opción ${optIdx + 1}`, ...(prev.logs || []).slice(0, 50)]
-                };
-                updateRemote(newGs);
-                return newGs;
               });
-            }, 1500);
+            }
+
+            // Adjust Loyalty based on AP
+            updatedPlayers = updatedPlayers.map(pl => {
+              const oldLoyalty = pl.loyalty || 70;
+              const delta = ((pl.ap || 50) - 50) / 2; // In V3 it was (ap - 100) / 2 where ap was 0-1000, so (ap/10 - 50)/2
+              const newLoyalty = Math.max(40, Math.min(100, 70 + delta));
+              if (Math.round(newLoyalty) !== Math.round(oldLoyalty)) {
+                logs.unshift(`${pl.name}: Lealtad ajustada a ${Math.round(newLoyalty)}%`);
+              }
+              return { ...pl, loyalty: newLoyalty };
+            });
+
+            electionData = updatedPlayers.map(pl => ({
+              name: pl.name, party: pl.party, op: pl.op, ap: pl.ap,
+              oldSeats: pl.oldSeats, newSeats: pl.seats,
+              loyalty: pl.loyalty, color: pl.color
+            }));
           }
-        }
 
-        // --- 2. Fase de Negociación (IA) ---
-        if (gs?.negotiating) {
-          const indecisosIA = players.map((p, i) => ({ p, i }))
-            .filter(({ p, i }) => p?.isAI && gs?.topOptions && !gs?.topOptions?.some(([idx]) => parseInt(idx) === (gs?.votes?.[i] ?? -1)) && (gs?.negotiationSwitches || {})[i] === undefined);
+          const newGs = {
+            ...gs,
+            showResults: false,
+            showElection: isEndOfRound && !isGameOver && !gs.pendingRescueTrigger,
+            electionData,
+            curSit: nextSit,
+            votes: {},
+            negotiationSwitches: {},
+            lastResults: null,
+            ownerIdx: nextOwnerIdx || 0,
+            turn: (isGameOver ? gs.turn : (gs.turn || 1) + 1) || 2,
+            players: updatedPlayers,
+            logs,
+            isGameOver,
+            gameOverReason,
+            pendingRescueTrigger: false,
+            voterQueue: [], // Se regenera en nextSituation
+            currentVoterPos: 0,
+            isAiProcessing: false
+          };
+          setGs(newGs);
+          updateRemote(newGs);
+          setTab('dashboard');
+        };
+        useEffect(() => {
+          if (!isHost || phase !== 'playing' || !gs?.curSit || gs?.isAiProcessing) return;
+          const voterQueue = gs?.voterQueue || [];
+          const voterIdx = voterQueue[gs?.currentVoterPos || 0];
+          const players = gs?.players || [];
+          const owner = players[gs?.ownerIdx || 0] || null;
 
-          if (indecisosIA.length > 0) {
-            const nextIA = indecisosIA[0];
-            setGs(p => ({ ...p, isAiProcessing: true }));
+          // --- 1. Fase de Votación Parlamentaria (IA) ---
+          if (!gs?.negotiating && !gs?.showResults) {
+            // Debug AI Logic
+            if (voterIdx !== undefined) {
+              // console.log(`Checking AI Vote: Pos=${gs.currentVoterPos}, VoterIdx=${voterIdx}, IsAI=${players[voterIdx]?.isAI}, HasVoted=${(gs?.votes || {})[voterIdx] !== undefined}, Processing=${gs.isAiProcessing}`);
+            }
 
-            setTimeout(() => {
-              setGs(prev => {
-                const winnerOpts = (prev.topOptions || []).map(([idx]) => parseInt(idx));
-                let bestSwitchIdx = winnerOpts[0];
-                let maxScore = -999;
+            if (voterIdx !== undefined && players[voterIdx] && players[voterIdx]?.isAI && (gs?.votes || {})[voterIdx] === undefined) {
+              console.log(`AI TRIC: ${players[voterIdx].name} (Idx ${voterIdx}) starting vote process...`);
+              setGs(p => ({ ...p, isAiProcessing: true }));
+              setTimeout(() => {
+                setGs(prev => {
+                  const capturedPos = gs?.currentVoterPos || 0;
+                  const currentVoterIdx = prev?.voterQueue?.[prev.currentVoterPos];
 
-                winnerOpts.forEach(oIdx => {
-                  const score = prev.curSit.options[oIdx]?.party?.[nextIA.p.party] || 0;
-                  if (score > maxScore) { maxScore = score; bestSwitchIdx = oIdx; }
+                  // Safety check: only proceed if it's still THIS AI's turn
+                  if (currentVoterIdx !== voterIdx || prev.votes?.[String(voterIdx)] !== undefined) {
+                    return { ...prev, isAiProcessing: false };
+                  }
+
+                  const optIdx = calculateBestOptionAI(voterIdx, prev.curSit, prev);
+                  const isLast = prev.currentVoterPos === (prev?.voterQueue?.length || 1) - 1;
+                  console.log(`AI ACTION: ${players[voterIdx].name} voted Option ${optIdx + 1}. Moving Pos ${prev.currentVoterPos} -> ${isLast ? prev.currentVoterPos : prev.currentVoterPos + 1}`);
+
+                  const newGs = {
+                    ...prev,
+                    votes: { ...(prev.votes || {}), [String(voterIdx)]: optIdx },
+                    currentVoterPos: isLast ? prev.currentVoterPos : prev.currentVoterPos + 1,
+                    isAiProcessing: false,
+                    logs: [`${(players[voterIdx]?.name || 'IA')} ha emitido su recomendación: Opción ${optIdx + 1}`, ...(prev.logs || []).slice(0, 50)]
+                  };
+                  updateRemote(newGs);
+                  return newGs;
                 });
+              }, 1500);
+            }
+          }
 
-                const newGs = {
-                  ...prev,
-                  negotiationSwitches: { ...(prev?.negotiationSwitches || {}), [nextIA.i]: bestSwitchIdx },
-                  isAiProcessing: false,
-                  logs: [`${(nextIA?.p?.name || 'Actor')} evaluando coaliciones...`, ...(prev?.logs || [])]
-                };
-                updateRemote(newGs);
-                return newGs;
-              });
-            }, 1500);
-          } else if (owner?.isAI && !gs?.isAiProcessing && !players.some(p => p.isHuman || p.id === playerId)) {
-            // Robust check: only auto-finalize if NO humans (or current human player) are in game.
+          // --- 2. Fase de Negociación (IA) ---
+          if (gs?.negotiating) {
+            const indecisosIA = players.map((p, i) => ({ p, i }))
+              .filter(({ p, i }) => p?.isAI && gs?.topOptions && !gs?.topOptions?.some(([idx]) => parseInt(idx) === (gs?.votes?.[i] ?? -1)) && (gs?.negotiationSwitches || {})[i] === undefined);
+
+            if (indecisosIA.length > 0) {
+              const nextIA = indecisosIA[0];
+              setGs(p => ({ ...p, isAiProcessing: true }));
+
+              setTimeout(() => {
+                setGs(prev => {
+                  const winnerOpts = (prev.topOptions || []).map(([idx]) => parseInt(idx));
+                  let bestSwitchIdx = winnerOpts[0];
+                  let maxScore = -999;
+
+                  winnerOpts.forEach(oIdx => {
+                    const score = prev.curSit.options[oIdx]?.party?.[nextIA.p.party] || 0;
+                    if (score > maxScore) { maxScore = score; bestSwitchIdx = oIdx; }
+                  });
+
+                  const newGs = {
+                    ...prev,
+                    negotiationSwitches: { ...(prev?.negotiationSwitches || {}), [nextIA.i]: bestSwitchIdx },
+                    isAiProcessing: false,
+                    logs: [`${(nextIA?.p?.name || 'Actor')} evaluando coaliciones...`, ...(prev?.logs || [])]
+                  };
+                  updateRemote(newGs);
+                  return newGs;
+                });
+              }, 1500);
+            } else if (owner?.isAI && !gs?.isAiProcessing && !players.some(p => p.isHuman || p.id === playerId)) {
+              // Robust check: only auto-finalize if NO humans (or current human player) are in game.
+              setGs(p => ({ ...p, isAiProcessing: true }));
+              setTimeout(() => {
+                finalizeVote();
+              }, 2000);
+            }
+          }
+
+          // --- 3. Fase de Decreto Presidencial (IA) ---
+          if (gs.showResults && gs.lastResults?.needsNegotiation && gs.attemptedNegotiation && owner?.isAI && !players.some(p => p.isHuman || p.id === playerId)) {
+            if (gs.isAiProcessing) return;
             setGs(p => ({ ...p, isAiProcessing: true }));
             setTimeout(() => {
-              finalizeVote();
+              const topOpts = (gs.topOptions || []).map(([idx]) => parseInt(idx));
+              let bestIdx = topOpts[0];
+              let maxS = -99999;
+              topOpts.forEach(oIdx => {
+                const s = calculateOptionScoreAI(gs?.ownerIdx || 0, gs?.curSit?.options?.[oIdx], gs?.budget || 0, gs?.sectors || [], gs?.players || [], gs?.tension || 0);
+                if (s > maxS) { maxS = s; bestIdx = oIdx; }
+              });
+              finalizeVote(bestIdx, true);
             }, 2000);
           }
-        }
 
-        // --- 3. Fase de Decreto Presidencial (IA) ---
-        if (gs.showResults && gs.lastResults?.needsNegotiation && gs.attemptedNegotiation && owner?.isAI && !players.some(p => p.isHuman || p.id === playerId)) {
-          if (gs.isAiProcessing) return;
-          setGs(p => ({ ...p, isAiProcessing: true }));
-          setTimeout(() => {
-            const topOpts = (gs.topOptions || []).map(([idx]) => parseInt(idx));
-            let bestIdx = topOpts[0];
-            let maxS = -99999;
-            topOpts.forEach(oIdx => {
-              const s = calculateOptionScoreAI(gs?.ownerIdx || 0, gs?.curSit?.options?.[oIdx], gs?.budget || 0, gs?.sectors || [], gs?.players || [], gs?.tension || 0);
-              if (s > maxS) { maxS = s; bestIdx = oIdx; }
-            });
-            finalizeVote(bestIdx, true);
-          }, 2000);
-        }
+        }, [isHost, gs?.currentVoterPos, gs?.curSit, gs?.negotiating, gs?.showResults, phase, gs?.isAiProcessing, gs?.players, playerId]);
 
-      }, [isHost, gs?.currentVoterPos, gs?.curSit, gs?.negotiating, gs?.showResults, phase, gs?.isAiProcessing, gs?.players, playerId]);
-
-      if (phase === 'lobby') {
-        return (
-          <div className="min-h-screen flex items-center justify-center p-8 text-white bg-black animate-page">
-            <div className="glass max-w-md w-full p-12 rounded-[3.5rem] space-y-10 border border-white/10 text-center relative overflow-hidden">
-              <div className="absolute -top-24 -right-24 w-64 h-64 bg-blue-600/10 blur-[100px] rounded-full"></div>
-              <h1 className="text-5xl font-black italic tracking-tighter relative">MAURI<span className="text-blue-500">LAND</span></h1>
-              <div className="space-y-4 relative">
-                <button onClick={createRoom} className="w-full bg-blue-600 hover:bg-blue-500 py-6 rounded-3xl font-black uppercase tracking-widest transition-all shadow-2xl active:scale-95 text-xs">Crear Sala</button>
-                <div className="flex items-center gap-4 py-2 opacity-30"><div className="h-[1px] bg-white flex-grow"></div><span className="text-[10px] font-black uppercase">o</span><div className="h-[1px] bg-white flex-grow"></div></div>
-                <input type="text" maxLength="4" placeholder="CÓDIGO" value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())} className="w-full bg-white/5 border border-white/10 p-6 rounded-3xl text-center font-black text-2xl tracking-[0.5em] focus:border-blue-500 outline-none transition-all" />
-                <button onClick={() => joinRoom(joinCode)} disabled={joinCode.length < 4} className="w-full bg-white/10 hover:bg-white/20 py-6 rounded-3xl font-black uppercase tracking-widest transition-all disabled:opacity-20 active:scale-95 text-xs">Unirse</button>
-              </div>
-            </div>
-          </div>
-        );
-      }
-
-      if (phase === 'setup') {
-        return (
-          <div className="min-h-screen flex items-center justify-center p-8 text-white bg-black animate-page">
-            <div className="glass max-w-2xl w-full p-12 rounded-[3.5rem] space-y-12 border border-white/10 relative overflow-hidden">
-              <div className="text-center space-y-4">
-                <span className="text-blue-500 font-black text-sm tracking-widest uppercase">SALA: {roomCode}</span>
-                <h2 className="text-6xl font-black uppercase tracking-tighter">Lobby <span className="text-blue-500 italic">Online</span></h2>
-                <p className="text-slate-400 font-medium">Jugadores en sala: {gs.players.length}</p>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                {gs.players.map((p, idx) => (
-                  <div key={idx} className="bg-white/5 border border-white/10 p-5 rounded-3xl flex items-center space-x-4">
-                    <div className="w-10 h-10 bg-blue-500/20 rounded-2xl flex items-center justify-center text-blue-400 font-black">{idx + 1}</div>
-                    <span className="font-black text-white text-sm">{p.name} {p.id === playerId ? '(Tú)' : ''}</span>
-                  </div>
-                ))}
-              </div>
-              {isHost ? (
-                <div className="space-y-6">
-                  <div className="flex items-center justify-center space-x-8">
-                    <button onClick={() => setNumPlayers(Math.max(2, numPlayers - 1))} className="text-2xl bg-white/5 w-12 h-12 rounded-full border border-white/10">-</button>
-                    <span className="text-4xl font-black italic">{numPlayers} Actores</span>
-                    <button onClick={() => setNumPlayers(Math.min(10, numPlayers + 1))} className="text-2xl bg-white/5 w-12 h-12 rounded-full border border-white/10">+</button>
-                  </div>
-                  <button onClick={startSetup} className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase tracking-widest text-xs">Configurar Partida</button>
+        if (phase === 'lobby') {
+          return (
+            <div className="min-h-screen flex items-center justify-center p-8 text-white bg-black animate-page">
+              <div className="glass max-w-md w-full p-12 rounded-[3.5rem] space-y-10 border border-white/10 text-center relative overflow-hidden">
+                <div className="absolute -top-24 -right-24 w-64 h-64 bg-blue-600/10 blur-[100px] rounded-full"></div>
+                <h1 className="text-5xl font-black italic tracking-tighter relative">MAURI<span className="text-blue-500">LAND</span></h1>
+                <div className="space-y-4 relative">
+                  <button onClick={createRoom} className="w-full bg-blue-600 hover:bg-blue-500 py-6 rounded-3xl font-black uppercase tracking-widest transition-all shadow-2xl active:scale-95 text-xs">Crear Sala</button>
+                  <div className="flex items-center gap-4 py-2 opacity-30"><div className="h-[1px] bg-white flex-grow"></div><span className="text-[10px] font-black uppercase">o</span><div className="h-[1px] bg-white flex-grow"></div></div>
+                  <input type="text" maxLength="4" placeholder="CÓDIGO" value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())} className="w-full bg-white/5 border border-white/10 p-6 rounded-3xl text-center font-black text-2xl tracking-[0.5em] focus:border-blue-500 outline-none transition-all" />
+                  <button onClick={() => joinRoom(joinCode)} disabled={joinCode.length < 4} className="w-full bg-white/10 hover:bg-white/20 py-6 rounded-3xl font-black uppercase tracking-widest transition-all disabled:opacity-20 active:scale-95 text-xs">Unirse</button>
                 </div>
-              ) : (
-                <p className="text-blue-400 font-black text-center animate-pulse uppercase text-[10px] tracking-widest">Esperando al Anfitrión...</p>
-              )}
+              </div>
             </div>
-          </div>
-        );
-      }
+          );
+        }
 
-      if (gs.isGameOver) return <GameOverScreen gs={gs} resetGame={() => window.location.reload()} />;
-
-      return (
-        <div className="flex flex-col min-h-screen text-white bg-[#07080c]">
-          {gs.showElection && (
-            <div className="fixed inset-0 z-[200] flex items-center justify-center p-8 bg-black/95 backdrop-blur-2xl animate-fade-in">
-              <div className="glass max-w-5xl w-full p-12 rounded-[3.5rem] border border-white/10 shadow-2xl space-y-8 animate-jump-in overflow-y-auto max-h-[90vh] custom-scrollbar">
+        if (phase === 'setup') {
+          return (
+            <div className="min-h-screen flex items-center justify-center p-8 text-white bg-black animate-page">
+              <div className="glass max-w-2xl w-full p-12 rounded-[3.5rem] space-y-12 border border-white/10 relative overflow-hidden">
                 <div className="text-center space-y-4">
-                  <div className="w-16 h-16 bg-blue-600/20 rounded-full flex items-center justify-center mx-auto border border-blue-600/30">
-                    <Icon name="gov" className="w-8 h-8 text-blue-400" />
-                  </div>
-                  <h2 className="text-5xl font-black uppercase tracking-tighter">Recuento <span className="text-blue-500 italic">Electoral</span></h2>
-                  <p className="text-slate-400 font-medium">La legislatura ha finalizado una ronda. El pueblo y las bases partidarias han evaluado tu desempeño.</p>
+                  <span className="text-blue-500 font-black text-sm tracking-widest uppercase">SALA: {roomCode}</span>
+                  <h2 className="text-6xl font-black uppercase tracking-tighter">Lobby <span className="text-blue-500 italic">Online</span></h2>
+                  <p className="text-slate-400 font-medium">Jugadores en sala: {gs.players.length}</p>
                 </div>
+                <div className="grid grid-cols-2 gap-4">
+                  {gs.players.map((p, idx) => (
+                    <div key={idx} className="bg-white/5 border border-white/10 p-5 rounded-3xl flex items-center space-x-4">
+                      <div className="w-10 h-10 bg-blue-500/20 rounded-2xl flex items-center justify-center text-blue-400 font-black">{idx + 1}</div>
+                      <span className="font-black text-white text-sm">{p.name} {p.id === playerId ? '(Tú)' : ''}</span>
+                    </div>
+                  ))}
+                </div>
+                {isHost ? (
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-center space-x-8">
+                      <button onClick={() => setNumPlayers(Math.max(2, numPlayers - 1))} className="text-2xl bg-white/5 w-12 h-12 rounded-full border border-white/10">-</button>
+                      <span className="text-4xl font-black italic">{numPlayers} Actores</span>
+                      <button onClick={() => setNumPlayers(Math.min(10, numPlayers + 1))} className="text-2xl bg-white/5 w-12 h-12 rounded-full border border-white/10">+</button>
+                    </div>
+                    <button onClick={startSetup} className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase tracking-widest text-xs">Configurar Partida</button>
+                  </div>
+                ) : (
+                  <p className="text-blue-400 font-black text-center animate-pulse uppercase text-[10px] tracking-widest">Esperando al Anfitrión...</p>
+                )}
+              </div>
+            </div>
+          );
+        }
 
-                <div className="grid gap-4">
-                  {(gs?.electionData || []).map((ed, i) => (
-                    <div key={i} className="glass p-6 rounded-3xl border border-white/5 flex flex-col md:flex-row justify-between items-center gap-6 relative overflow-hidden group">
-                      <div className="absolute top-0 left-0 w-1.5 h-full opacity-50 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: ed.color }}></div>
-                      <div className="flex items-center space-x-6 min-w-[200px]">
-                        <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center text-2xl font-bold border border-white/10">{i + 1}</div>
-                        <div>
-                          <h3 className="font-bold text-xl text-white">{ed.name}</h3>
-                          <span className="text-[13px] uppercase font-black text-slate-500 tracking-widest">{ed.party}</span>
-                        </div>
-                      </div>
+        if (gs.isGameOver) return <GameOverScreen gs={gs} resetGame={() => window.location.reload()} />;
 
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-6 flex-grow">
-                        <div className="text-center">
-                          <span className="block text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-widest">Opinión (OP)</span>
-                          <span className="text-2xl font-black text-white">{ed.op}</span>
-                        </div>
-                        <div className="text-center">
-                          <span className="block text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-widest">Aprobación (AP)</span>
-                          <span className="text-2xl font-black text-white">{ed.ap}</span>
-                        </div>
-                        <div className="text-center p-3 bg-blue-500/10 rounded-2xl border border-blue-500/20">
-                          <span className="block text-[10px] text-blue-400 uppercase font-bold mb-1 tracking-widest">Nuevas Bancas</span>
-                          <div className="flex items-center justify-center space-x-2">
-                            <span className="text-slate-600 text-sm line-through font-mono">{ed.oldSeats}</span>
-                            <span className="text-2xl font-black text-white font-mono">{ed.newSeats}</span>
+        return (
+          <div className="flex flex-col min-h-screen text-white bg-[#07080c]">
+            {gs.showElection && (
+              <div className="fixed inset-0 z-[200] flex items-center justify-center p-8 bg-black/95 backdrop-blur-2xl animate-fade-in">
+                <div className="glass max-w-5xl w-full p-12 rounded-[3.5rem] border border-white/10 shadow-2xl space-y-8 animate-jump-in overflow-y-auto max-h-[90vh] custom-scrollbar">
+                  <div className="text-center space-y-4">
+                    <div className="w-16 h-16 bg-blue-600/20 rounded-full flex items-center justify-center mx-auto border border-blue-600/30">
+                      <Icon name="gov" className="w-8 h-8 text-blue-400" />
+                    </div>
+                    <h2 className="text-5xl font-black uppercase tracking-tighter">Recuento <span className="text-blue-500 italic">Electoral</span></h2>
+                    <p className="text-slate-400 font-medium">La legislatura ha finalizado una ronda. El pueblo y las bases partidarias han evaluado tu desempeño.</p>
+                  </div>
+
+                  <div className="grid gap-4">
+                    {(gs?.electionData || []).map((ed, i) => (
+                      <div key={i} className="glass p-6 rounded-3xl border border-white/5 flex flex-col md:flex-row justify-between items-center gap-6 relative overflow-hidden group">
+                        <div className="absolute top-0 left-0 w-1.5 h-full opacity-50 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: ed.color }}></div>
+                        <div className="flex items-center space-x-6 min-w-[200px]">
+                          <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center text-2xl font-bold border border-white/10">{i + 1}</div>
+                          <div>
+                            <h3 className="font-bold text-xl text-white">{ed.name}</h3>
+                            <span className="text-[13px] uppercase font-black text-slate-500 tracking-widest">{ed.party}</span>
                           </div>
                         </div>
-                        <div className="text-center p-3 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
-                          <span className="block text-[10px] text-emerald-400 uppercase font-bold mb-1 tracking-widest">Nueva Lealtad</span>
-                          <div className="flex items-center justify-center space-x-2">
-                            <span className="text-2xl font-black text-white font-mono">{Math.round(ed.loyalty)}%</span>
+
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-6 flex-grow">
+                          <div className="text-center">
+                            <span className="block text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-widest">Opinión (OP)</span>
+                            <span className="text-2xl font-black text-white">{ed.op}</span>
+                          </div>
+                          <div className="text-center">
+                            <span className="block text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-widest">Aprobación (AP)</span>
+                            <span className="text-2xl font-black text-white">{ed.ap}</span>
+                          </div>
+                          <div className="text-center p-3 bg-blue-500/10 rounded-2xl border border-blue-500/20">
+                            <span className="block text-[10px] text-blue-400 uppercase font-bold mb-1 tracking-widest">Nuevas Bancas</span>
+                            <div className="flex items-center justify-center space-x-2">
+                              <span className="text-slate-600 text-sm line-through font-mono">{ed.oldSeats}</span>
+                              <span className="text-2xl font-black text-white font-mono">{ed.newSeats}</span>
+                            </div>
+                          </div>
+                          <div className="text-center p-3 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
+                            <span className="block text-[10px] text-emerald-400 uppercase font-bold mb-1 tracking-widest">Nueva Lealtad</span>
+                            <div className="flex items-center justify-center space-x-2">
+                              <span className="text-2xl font-black text-white font-mono">{Math.round(ed.loyalty)}%</span>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-
-                <button
-                  onClick={() => {
-                    const newGs = { ...gs, showElection: false };
-                    setGs(newGs);
-                    if (isHost) updateRemote(newGs);
-                  }}
-                  className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-6 rounded-3xl shadow-xl transition-all uppercase text-sm tracking-widest active:scale-95 shadow-blue-500/20"
-                >
-                  Continuar Próxima Ronda
-                </button>
-              </div>
-            </div>
-          )}
-
-          <nav className="glass border-b border-white/10 px-8 py-4 sticky top-0 z-50 flex justify-between items-center">
-            <div className="flex items-center space-x-3">
-              <Icon name="gov" className="text-blue-500 w-8 h-8" />
-              <span className="text-2xl font-bold tracking-tighter uppercase italic">MauriLand <span className="text-[10px] font-black text-slate-500 ml-2">SALA: {roomCode}</span></span>
-            </div>
-            <div className="flex space-x-8 text-sm font-bold uppercase tracking-widest text-slate-400">
-              {['players', 'dashboard', 'parliament', 'negotiation', 'logs'].map(t => (
-                <button key={t} onClick={() => setTab(t)} className={`hover:text-white transition-all ${tab === t ? 'border-b-2 border-blue-500 pb-1 text-white' : ''}`}>
-                  {t === 'players' ? 'Cámara' : t === 'dashboard' ? 'Nación' : t === 'parliament' ? 'Votos' : t === 'negotiation' ? 'Pactos' : 'Actas'}
-                </button>
-              ))}
-            </div>
-            <div className="flex items-center space-x-6">
-              <div className="bg-black/40 px-6 py-2 rounded-full border border-white/5 flex items-center space-x-4">
-                <span className="text-blue-400 font-black">${gs.budget}M</span>
-                <span className="text-slate-300 font-black text-[11px]">Turno {gs.turn}/12</span>
-              </div>
-            </div>
-          </nav>
-
-          <main className="max-w-7xl mx-auto w-full p-8 flex-grow">
-            {phase === 'setup-details' && (
-              <div className="animate-page glass rounded-[3.5rem] p-12 border border-white/10 max-w-3xl mx-auto text-center space-y-10">
-                <h2 className="text-5xl font-black uppercase tracking-tighter">Nombres de <span className="text-blue-500">Líderes</span></h2>
-                <div className="space-y-4 max-h-[400px] overflow-y-auto px-4 custom-scrollbar">
-                  {(gs?.players || []).map((p, i) => (
-                    <div key={i} className="glass p-5 rounded-3xl border border-white/5 flex items-center space-x-4">
-                      <div className="w-10 h-10 bg-blue-500/20 rounded-full flex items-center justify-center font-bold text-blue-400">{i + 1}</div>
-                      <input
-                        className="flex-grow bg-transparent border border-white/10 rounded-xl px-4 py-3 text-white font-black"
-                        value={p.name}
-                        disabled={p.id !== playerId && !isHost}
-                        onChange={(e) => {
-                          const newP = [...gs.players]; newP[i].name = e.target.value;
-                          const newGs = { ...gs, players: newP };
-                          setGs(newGs); if (isHost) updateRemote(newGs);
-                        }}
-                      />
-                      <button
-                        onClick={() => {
-                          if (!isHost) return;
-                          const newP = [...gs.players];
-                          newP[i].isHuman = !newP[i].isHuman;
-                          const newGs = { ...gs, players: newP };
-                          setGs(newGs); updateRemote(newGs);
-                        }}
-                        disabled={!isHost}
-                        className={`px-6 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all ${p.isHuman ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30' : 'bg-purple-600/20 text-purple-400 border border-purple-500/30'} ${!isHost ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105 active:scale-95'}`}
-                      >
-                        {p.isHuman ? 'Humano' : 'Sistema IA'}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                {isHost && <button onClick={finalizeSetup} className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase text-xs shadow-2xl shadow-blue-900/40">Asignar Partidos</button>}
-              </div>
-            )}
-
-            {phase === 'assignment' && (
-              <div className="animate-page glass rounded-[3.5rem] p-12 border border-white/10 max-w-5xl mx-auto space-y-12 text-center">
-                <h2 className="text-5xl font-black uppercase tracking-tighter">Asignación <span className="text-blue-500 italic">Oficial</span></h2>
-                <div className="grid grid-cols-3 gap-6">
-                  {(gs?.players || []).map((p, i) => (
-                    <div key={i} className="glass p-6 rounded-3xl border-t-4" style={{ borderTopColor: p.color }}>
-                      <h3 className="text-xl font-black">{p.name}</h3>
-                      <div className="text-[10px] font-black uppercase opacity-50">{p.party}</div>
-                      <div className="flex justify-between text-[11px] font-bold mt-4 border-t border-white/5 pt-2">
-                        <span>{p.seats} BANCAS</span>
-                        <span>{p.ap}% AP</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                {isHost && <button onClick={() => updateRemote(gs, 'playing')} className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase text-xs">Entrar al Palacio</button>}
-              </div>
-            )}
-
-            {phase === 'playing' && (
-              <>
-                {tab === 'players' && <TabPlayers gs={gs} />}
-                {tab === 'dashboard' && <TabDashboard gs={gs} nextSituation={nextSituation} resetGame={resetGame} setTab={setTab} isHost={isHost} />}
-                {tab === 'parliament' && <TabParliament gs={gs} castVote={castVote} finalizeVote={finalizeVote} closeResults={closeResults} isHost={isHost} playerId={playerId} setTab={setTab} nextSituation={nextSituation} setGs={setGs} updateRemote={updateRemote} />}
-                {tab === 'negotiation' && <TabNegotiation gs={gs} setGs={setGs} updateRemote={updateRemote} />}
-                {tab === 'logs' && <TabLogs gs={gs} />}
-              </>
-            )}
-          </main>
-        </div>
-      );
-
-
-
-    }
-
-    function GameOverScreen({ gs, resetGame }) {
-      const sortedPlayers = [...gs.players].sort((a, b) => (b.op + b.ap) - (a.op + a.ap));
-
-      return (
-        <div className="min-h-screen flex items-center justify-center p-8 text-white bg-black animate-page">
-          <div className="glass max-w-4xl w-full p-12 rounded-[3.5rem] space-y-12 border border-white/10 relative overflow-hidden">
-            <div className="absolute top-0 right-0 p-10 opacity-5 pointer-events-none"><Icon name="gov" className="w-64 h-64" /></div>
-
-            <div className="text-center space-y-4">
-              <div className="w-20 h-20 bg-blue-600/20 rounded-full flex items-center justify-center mx-auto border border-blue-600/30">
-                <Icon name="stats" className="w-10 h-10 text-blue-400" />
-              </div>
-              <h2 className="text-6xl font-black uppercase tracking-tighter">Fin de la <span className="text-blue-500">Gestión</span></h2>
-              <p className="text-slate-400 text-xl font-medium max-w-xl mx-auto">{gs.gameOverReason}</p>
-            </div>
-
-            <div className="space-y-6">
-              <h3 className="text-sm font-black uppercase tracking-widest text-slate-500 border-b border-white/5 pb-4">Ranking de Capital Político</h3>
-              <div className="space-y-4">
-                {(gs?.players || []).map((p, i) => (
-                  <div key={i} className={`flex items-center justify-between p-6 rounded-3xl border transition-all ${i === 0 ? 'bg-blue-600/10 border-blue-500/30 neon-blue' : 'bg-white/5 border-white/10 opacity-80'}`}>
-                    <div className="flex items-center space-x-6">
-                      <div className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-xl ${i === 0 ? 'bg-blue-500 text-white' : 'bg-slate-800 text-slate-500'}`}>
-                        {i + 1}
-                      </div>
-                      <div>
-                        <span className="block font-black text-2xl text-white capitalize">{p.name}</span>
-                        <span className="text-sm text-slate-500 font-bold uppercase tracking-widest">{p.party}</span>
-                      </div>
-                    </div>
-                    <div className="text-right space-y-1">
-                      <div className="text-3xl font-black text-white">{p.op + p.ap} <span className="text-[10px] text-slate-500 uppercase tracking-tighter">Puntos</span></div>
-                      <div className="flex space-x-4 justify-end text-[12px] font-bold">
-                        <span className="text-blue-400">OP: {p.op}</span>
-                        <span className="text-emerald-400">AP: {p.ap}</span>
-                      </div>
-                    </div>
+                    ))}
                   </div>
+
+                  <button
+                    onClick={() => {
+                      const newGs = { ...gs, showElection: false };
+                      setGs(newGs);
+                      if (isHost) updateRemote(newGs);
+                    }}
+                    className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-6 rounded-3xl shadow-xl transition-all uppercase text-sm tracking-widest active:scale-95 shadow-blue-500/20"
+                  >
+                    Continuar Próxima Ronda
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <nav className="glass border-b border-white/10 px-8 py-4 sticky top-0 z-50 flex justify-between items-center">
+              <div className="flex items-center space-x-3">
+                <Icon name="gov" className="text-blue-500 w-8 h-8" />
+                <span className="text-2xl font-bold tracking-tighter uppercase italic">MauriLand <span className="text-[10px] font-black text-slate-500 ml-2">SALA: {roomCode}</span></span>
+              </div>
+              <div className="flex space-x-8 text-sm font-bold uppercase tracking-widest text-slate-400">
+                {['players', 'dashboard', 'parliament', 'negotiation', 'logs'].map(t => (
+                  <button key={t} onClick={() => setTab(t)} className={`hover:text-white transition-all ${tab === t ? 'border-b-2 border-blue-500 pb-1 text-white' : ''}`}>
+                    {t === 'players' ? 'Cámara' : t === 'dashboard' ? 'Nación' : t === 'parliament' ? 'Votos' : t === 'negotiation' ? 'Pactos' : 'Actas'}
+                  </button>
                 ))}
               </div>
-            </div>
-
-            <button onClick={resetGame} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-6 rounded-3xl shadow-2xl shadow-blue-900/40 transition-all uppercase text-sm tracking-widest active:scale-95">Iniciar Nueva Legislatura</button>
-          </div>
-        </div>
-      );
-    }
-
-    function TabPlayers({ gs }) {
-      const players = gs?.players || [];
-      const leaderOP = [...players].sort((a, b) => (b.op || 0) - (a.op || 0))[0];
-      const leaderAP = [...players].sort((a, b) => (b.ap || 0) - (a.ap || 0))[0];
-
-      return (
-        <div className="animate-page space-y-8">
-          {/* Indicadores Superiores (KPIs Estilo Imagen) */}
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-            <div className="glass p-6 rounded-2xl border border-white/5 text-center">
-              <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Presupuesto</span>
-              <div className="text-2xl font-black text-white bg-black/40 py-2 rounded-xl border border-white/5">${gs.budget}</div>
-            </div>
-            <div className="glass p-6 rounded-2xl border border-white/5 text-center">
-              <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Tensión Social</span>
-              <div className="text-2xl font-black text-white bg-black/40 py-2 rounded-xl border border-white/5">{(gs.tension || 0).toFixed(1)}%</div>
-            </div>
-            <div className="glass p-6 rounded-2xl border border-white/5 text-center">
-              <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Clima Mediático</span>
-              <div className="text-2xl font-black text-white bg-black/40 py-2 rounded-xl border border-white/5">{(gs.media || 0).toFixed(1)}</div>
-            </div>
-            <div className="glass p-6 rounded-2xl border border-white/5 text-center">
-              <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Líder OP</span>
-              <div className="text-[14px] font-black text-blue-400 bg-blue-500/10 py-2 rounded-xl border border-blue-500/20 truncate px-2">{leaderOP ? `${leaderOP.name} (${leaderOP.op})` : "N/A"}</div>
-            </div>
-            <div className="glass p-6 rounded-2xl border border-white/5 text-center">
-              <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Líder AP</span>
-              <div className="text-[14px] font-black text-emerald-400 bg-emerald-500/10 py-2 rounded-xl border border-emerald-500/20 truncate px-2">{leaderAP ? `${leaderAP.name} (${leaderAP.ap})` : "N/A"}</div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            {/* Tabla Principal de Jugadores */}
-            <div className="lg:col-span-2 glass rounded-[2.5rem] overflow-hidden border border-white/10 flex flex-col">
-              <div className="p-8 border-b border-white/5 flex justify-between items-center">
-                <h3 className="text-base font-black uppercase tracking-widest text-slate-300">Situación de Jugadores</h3>
-                <Icon name="user" className="w-5 h-5 text-slate-500" />
+              <div className="flex items-center space-x-6">
+                <div className="bg-black/40 px-6 py-2 rounded-full border border-white/5 flex items-center space-x-4">
+                  <span className="text-blue-400 font-black">${gs.budget}M</span>
+                  <span className="text-slate-300 font-black text-[11px]">Turno {gs.turn}/12</span>
+                </div>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="text-[12px] text-slate-500 uppercase tracking-widest border-b border-white/5 bg-white/5">
-                      <th className="px-6 py-4">#</th>
-                      <th className="px-6 py-4">Nombre</th>
-                      <th className="px-6 py-4">Partido</th>
-                      <th className="px-6 py-4 text-center">OP</th>
-                      <th className="px-6 py-4 text-center">AP</th>
-                      <th className="px-6 py-4 text-center">Total</th>
-                      <th className="px-6 py-4 text-center">Bancas</th>
-                      <th className="px-6 py-4 text-center">Lealtad</th>
-                      <th className="px-6 py-4 text-center">Conf.</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-[14px] font-medium">
+            </nav>
+
+            <main className="max-w-7xl mx-auto w-full p-8 flex-grow">
+              {phase === 'setup-details' && (
+                <div className="animate-page glass rounded-[3.5rem] p-12 border border-white/10 max-w-3xl mx-auto text-center space-y-10">
+                  <h2 className="text-5xl font-black uppercase tracking-tighter">Nombres de <span className="text-blue-500">Líderes</span></h2>
+                  <div className="space-y-4 max-h-[400px] overflow-y-auto px-4 custom-scrollbar">
                     {(gs?.players || []).map((p, i) => (
-                      <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
-                        <td className="px-6 py-4 text-slate-500 font-mono">{i + 1}</td>
-                        <td className="px-6 py-4 font-bold text-white">{p.name}</td>
-                        <td className="px-6 py-4"><span className="px-2 py-1 rounded-lg text-[10px] bg-white/5 border border-white/10" style={{ color: p.color }}>{p.party}</span></td>
-                        <td className="px-6 py-4 text-center font-mono text-blue-400">{p.op}</td>
-                        <td className="px-6 py-4 text-center font-mono text-emerald-400">{p.ap}</td>
-                        <td className="px-6 py-4 text-center font-mono text-white">{p.op + p.ap}</td>
-                        <td className="px-6 py-4 text-center font-mono text-blue-500 font-bold">{p.seats}</td>
-                        <td className="px-6 py-4 text-center font-mono text-slate-400">{(p.loyalty || 0).toFixed(0)}%</td>
-                        <td className="px-6 py-4 text-center">
-                          <div className="w-12 h-1 bg-slate-800 rounded-full mx-auto overflow-hidden">
-                            <div className="h-full bg-blue-500" style={{ width: `${p.ap}%` }}></div>
-                          </div>
-                        </td>
-                      </tr>
+                      <div key={i} className="glass p-5 rounded-3xl border border-white/5 flex items-center space-x-4">
+                        <div className="w-10 h-10 bg-blue-500/20 rounded-full flex items-center justify-center font-bold text-blue-400">{i + 1}</div>
+                        <input
+                          className="flex-grow bg-transparent border border-white/10 rounded-xl px-4 py-3 text-white font-black"
+                          value={p.name}
+                          disabled={p.id !== playerId && !isHost}
+                          onChange={(e) => {
+                            const newP = [...gs.players]; newP[i].name = e.target.value;
+                            const newGs = { ...gs, players: newP };
+                            setGs(newGs); if (isHost) updateRemote(newGs);
+                          }}
+                        />
+                        <button
+                          onClick={() => {
+                            if (!isHost) return;
+                            const newP = [...gs.players];
+                            newP[i].isHuman = !newP[i].isHuman;
+                            const newGs = { ...gs, players: newP };
+                            setGs(newGs); updateRemote(newGs);
+                          }}
+                          disabled={!isHost}
+                          className={`px-6 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all ${p.isHuman ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30' : 'bg-purple-600/20 text-purple-400 border border-purple-500/30'} ${!isHost ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105 active:scale-95'}`}
+                        >
+                          {p.isHuman ? 'Humano' : 'Sistema IA'}
+                        </button>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Paneles Laterales */}
-            <div className="space-y-8">
-              {/* Partidos en vivo */}
-              <div className="glass rounded-[2rem] p-6 border border-white/10">
-                <h3 className="text-[13px] font-black uppercase tracking-widest text-slate-500 mb-6 flex justify-between">
-                  <span>Partidos (En Vivo)</span>
-                  <Icon name="stats" className="w-4 h-4" />
-                </h3>
-                <div className="space-y-4">
-                  {(Object.keys(EXTERNAL_DATA.PARTIES) || []).map((party, idx) => {
-                    const pData = (gs?.players || []).filter(p => p && p.party === party);
-                    if (pData.length === 0) return null;
-                    const totalAP = pData.reduce((acc, curr) => acc + (curr?.ap || 0), 0);
-                    return (
-                      <div key={idx} className="flex justify-between items-center bg-black/20 p-4 rounded-2xl border border-white/5">
-                        <div className="space-y-1">
-                          <span className="text-[13px] font-bold text-slate-200 block">{party}</span>
-                          <span className="text-[10px] text-slate-500 uppercase">Jugs: {pData.length}</span>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-xl font-black text-blue-400 leading-none block">{totalAP}</span>
-                          <span className="text-[7px] text-slate-500 uppercase font-bold">AP Total</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Sectores */}
-              <div className="glass rounded-[2rem] p-6 border border-white/10">
-                <h3 className="text-[13px] font-black uppercase tracking-widest text-slate-500 mb-6 flex justify-between">
-                  <span>Sectores (Peso + Conf)</span>
-                  <Icon name="law" className="w-4 h-4" />
-                </h3>
-                <div className="space-y-3 max-h-[500px] overflow-y-auto px-2 custom-scrollbar">
-                  {(gs?.sectors || []).map((s, i) => {
-                    const totalWeight = (gs?.sectors || []).reduce((acc, curr) => acc + (curr?.weight || 0), 0);
-                    const percentage = totalWeight > 0 ? (((s?.weight || 0) / totalWeight) * 100).toFixed(1) : 0;
-                    return (
-                      <div key={i} className="flex justify-between items-center text-[13px] group py-1 border-b border-white/5 last:border-0">
-                        <span className="text-slate-400 group-hover:text-white transition-colors capitalize w-1/3 truncate" title={s.name}>{s.name}</span>
-                        <div className="flex items-center space-x-3 justify-end w-2/3">
-                          <span className="font-mono text-slate-500 bg-white/5 px-2 py-0.5 rounded text-[11px] w-16 text-center">{percentage}%</span>
-                          <span className={`font-mono font-black w-8 text-right ${s.value > 500 ? 'text-emerald-400' : 'text-red-400'}`}>{s.value}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    function TabDashboard({ gs, nextSituation, resetGame, setTab, isHost }) {
-      // Safety check for gs presence
-      if (!gs) return <div className="p-20 text-center opacity-50 uppercase font-black text-xs tracking-widest">Cargando Datos...</div>;
-
-      const owner = (gs?.players && gs?.players[gs?.ownerIdx % (gs?.players?.length || 1)]) || null;
-      // Recuperar la situación fresca de EXTERNAL_DATA para asegurar que la URL de la imagen esté actualizada
-      // y no sea un dato obsoleto del localStorage
-      const curSit = gs?.curSit ? (EXTERNAL_DATA.SITUATIONS.find(s => s.id === gs.curSit.id) || gs.curSit) : null;
-      const [imgError, setImgError] = useState(false);
-
-      useEffect(() => {
-        setImgError(false);
-      }, [curSit?.id]);
-
-      return (
-        <div className="animate-page space-y-8">
-          {/* Indicadores Clave */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <KPICard label="Presupuesto" value={`$${gs.budget || 0}M`} icon="gov" color="text-blue-400" />
-            <KPICard label="Tensión Social" value={`${(gs.tension || 0).toFixed(1)}%`} icon="stats" color={(gs.tension || 0) > 5 ? "text-red-400" : "text-emerald-400"} />
-            <KPICard label="Clima Mediático" value={(gs.media || 0).toFixed(1)} icon="shake" color="text-purple-400" />
-            <KPICard label="Turno" value={`${gs.turn || 1}/12`} icon="law" color="text-orange-400" />
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div className="lg:col-span-2 glass rounded-[2.5rem] p-10 flex flex-col md:flex-row gap-8 items-center bg-gradient-to-br from-blue-500/5 to-transparent relative overflow-hidden h-full">
-              <div className="absolute top-0 right-0 p-10 opacity-5 pointer-events-none"><Icon name="law" className="w-64 h-64" /></div>
-
-              {curSit ? (
-                <>
-                  <div className="w-full md:w-1/2 aspect-video bg-white/5 rounded-[2rem] border border-white/10 flex items-center justify-center overflow-hidden relative shadow-2xl shrink-0 group">
-                    {curSit.image && !imgError ? (
-                      <img
-                        src={curSit.image}
-                        alt={curSit.id}
-                        referrerPolicy="no-referrer"
-                        onError={() => setImgError(true)}
-                        className="w-full h-full object-cover opacity-80 transition-transform duration-700 group-hover:scale-110"
-                      />
-                    ) : (
-                      <div className="absolute inset-0 bg-gradient-to-br from-blue-500/20 to-purple-500/20 flex flex-col items-center justify-center text-slate-500 space-y-2">
-                        <Icon name="alert" className="w-12 h-12 opacity-50" />
-                        {imgError && (
-                          <button
-                            onClick={() => setImgError(false)}
-                            className="text-[13px] uppercase font-bold border border-white/10 px-3 py-1 rounded-full hover:bg-white/10 hover:text-white transition-colors"
-                          >
-                            Reintentar Imagen
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent"></div>
-                    <div className="absolute bottom-4 left-6">
-                      <span className="bg-red-600 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest animate-pulse">Emergencia Activa</span>
-                    </div>
                   </div>
-                  <div className="flex-grow space-y-4">
-                    <div className="space-y-1">
-                      <span className="text-blue-400 font-bold text-[13px] uppercase tracking-widest">Turno {gs?.turn || 1} / 12</span>
-                      <h2 className="text-5xl font-black tracking-tight leading-none text-white">{curSit?.id || "---"}</h2>
-                    </div>
-                    <p className="text-base text-slate-400 font-medium leading-relaxed line-clamp-3">
-                      {curSit?.description || "---"}
-                    </p>
-                    <div className="flex space-x-3 pt-2">
-                      <button onClick={() => setTab('parliament')} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-8 py-4 rounded-2xl shadow-xl shadow-blue-900/40 transition-all active:scale-95 uppercase text-[13px] tracking-widest">Ir a Votación</button>
-                      {isHost && <button onClick={resetGame} className="bg-white/5 border border-white/10 text-slate-500 font-bold px-6 py-4 rounded-2xl transition-all uppercase text-[13px] tracking-widest hover:bg-red-500/20 hover:text-red-400">Reiniciar</button>}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="space-y-8">
-                  <div className="space-y-2">
-                    <span className="text-blue-400 font-bold text-sm uppercase tracking-widest">Turno de Presidencia (Dueño): {owner ? owner?.name : "..."}</span>
-                    <h2 className="text-6xl font-bold tracking-tight">Estado de la <span className="gradient-text">Unión</span></h2>
-                  </div>
-                  <div className="flex space-x-4">
-                    {isHost ? (
-                      <>
-                        <button onClick={nextSituation} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-10 py-5 rounded-2xl shadow-xl shadow-blue-900/40 transition-all active:scale-95 uppercase text-[13px] tracking-widest">Abrir Nueva Sesión</button>
-                        <button onClick={resetGame} className="bg-red-500/10 border border-red-500/20 text-red-500 font-bold px-10 py-5 rounded-2xl transition-all uppercase text-[13px] tracking-widest hover:bg-red-500 hover:text-white">Reiniciar Partida</button>
-                      </>
-                    ) : (
-                      <div className="bg-blue-500/10 border border-blue-500/20 p-6 rounded-2xl">
-                        <p className="text-blue-400 font-black uppercase text-xs tracking-widest animate-pulse italic">Esperando que el Presidente abra la sesión...</p>
-                      </div>
-                    )}
-                  </div>
+                  {isHost && <button onClick={finalizeSetup} className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase text-xs shadow-2xl shadow-blue-900/40">Asignar Partidos</button>}
                 </div>
               )}
-            </div>
 
-            <div className="glass rounded-[2.5rem] p-8 space-y-6 flex flex-col h-full">
-              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest">Sectores Sociales</h3>
-              <div className="space-y-4 overflow-y-auto px-2 custom-scrollbar flex-grow">
-                {(gs?.sectors || []).map((s, i) => (
-                  <div key={i} className="space-y-1">
-                    <div className="flex justify-between text-[13px] font-bold uppercase"><span>{s?.name}</span><span className={(s?.value || 0) > 500 ? "text-emerald-400" : "text-red-400"}>{s?.value}</span></div>
-                    <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
-                      <div className={`h-full ${(s?.value || 0) > 500 ? "bg-emerald-500" : "bg-red-500"}`} style={{ width: `${(s?.value || 0) / 10}%` }}></div>
-                    </div>
+              {phase === 'assignment' && (
+                <div className="animate-page glass rounded-[3.5rem] p-12 border border-white/10 max-w-5xl mx-auto space-y-12 text-center">
+                  <h2 className="text-5xl font-black uppercase tracking-tighter">Asignación <span className="text-blue-500 italic">Oficial</span></h2>
+                  <div className="grid grid-cols-3 gap-6">
+                    {(gs?.players || []).map((p, i) => (
+                      <div key={i} className="glass p-6 rounded-3xl border-t-4" style={{ borderTopColor: p.color }}>
+                        <h3 className="text-xl font-black">{p.name}</h3>
+                        <div className="text-[10px] font-black uppercase opacity-50">{p.party}</div>
+                        <div className="flex justify-between text-[11px] font-bold mt-4 border-t border-white/5 pt-2">
+                          <span>{p.seats} BANCAS</span>
+                          <span>{p.ap}% AP</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </div>
-          </div>
+                  {isHost && <button onClick={() => updateRemote(gs, 'playing')} className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase text-xs">Entrar al Palacio</button>}
+                </div>
+              )}
 
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-            {(gs?.players || []).map((p, i) => (
-              <div key={i} className={`glass p-6 rounded-3xl border-t-[6px] transition-all relative ${gs.ownerIdx === i ? 'neon-blue scale-105 z-10' : 'opacity-80'}`} style={{ borderTopColor: p?.color }}>
-                {gs.ownerIdx === i && <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-600 text-[10px] font-black px-3 py-1 rounded-full text-white uppercase tracking-tighter">Presidente</div>}
-                <span className="text-[13px] text-slate-500 font-bold block mb-1">{p?.party}</span>
-                <h4 className="font-bold text-xl mb-2">{p?.name}</h4>
-                <div className="flex justify-between text-[13px] mb-1"><span>Escaños</span><span className="text-blue-400 font-bold">{p?.seats}</span></div>
-                <div className="flex justify-between text-[13px] text-slate-500 font-bold"><span>Lealtad</span><span>{p?.loyalty ? p.loyalty.toFixed(0) : 0}%</span></div>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    function TabParliament(props) {
-      try {
-        const { gs, castVote, finalizeVote, closeResults, isHost, playerId, setTab, nextSituation, setGs, updateRemote } = props;
-        if (!gs) return null;
-
-        const players = gs?.players || [];
-        const currentVoterPos = typeof gs.currentVoterPos === 'number' ? gs.currentVoterPos : 0;
-        const voterQueue = gs?.voterQueue || [];
-        const currentVoterIdx = voterQueue[currentVoterPos];
-        const currentVoter = (currentVoterIdx !== undefined && players[currentVoterIdx]) ? players[currentVoterIdx] : null;
-        const votes = gs?.votes || {};
-        const isAllVoted = votes && players.length > 0 && Object.keys(votes).length >= players.length;
-
-        const safeOptions = Array.isArray(gs?.curSit?.options) ? gs.curSit.options : Object.values(gs?.curSit?.options || {});
-        const safeVoterQueue = Array.isArray(gs?.voterQueue) ? gs.voterQueue : Object.values(gs?.voterQueue || {});
-        const safeVotes = gs?.votes || {};
-        const safeAgreements = Array.isArray(gs?.activeAgreements) ? gs.activeAgreements : Object.values(gs?.activeAgreements || {});
-        const safeTopOptions = Array.isArray(gs?.topOptions) ? gs.topOptions : Object.values(gs?.topOptions || {});
-
-        if (!gs.curSit) return (
-          <div className="animate-page space-y-8">
-            <div className="glass rounded-[3rem] p-20 flex flex-col items-center justify-center text-center space-y-8 relative overflow-hidden bg-gradient-to-br from-blue-500/5 to-transparent min-h-[500px]">
-              <div className="absolute top-0 right-0 p-10 opacity-5"><Icon name="law" className="w-64 h-64" /></div>
-              <div className="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center text-slate-700 border border-white/10 relative">
-                <Icon name="law" className="w-12 h-12" />
-                <div className="absolute -bottom-1 -right-1 bg-red-500/20 text-red-500 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border border-red-500/30">Offline</div>
-              </div>
-              <div className="space-y-4 max-w-xl">
-                <h2 className="text-6xl font-extrabold tracking-tighter uppercase">Cámara en <span className="text-blue-500">Receso</span></h2>
-                <p className="text-slate-400 font-medium text-xl leading-relaxed">El Palacio Legislativo se encuentra actualmente en periodo de receso.</p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-md">
-                <button onClick={() => setTab('dashboard')} className="glass bg-white/5 border border-white/10 text-slate-500 font-bold py-5 rounded-2xl hover:bg-white/10 transition-all uppercase text-[13px] tracking-widest">Tablero de Control</button>
-                {isHost ? (<button onClick={nextSituation} className="bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-500/20 transition-all hover:scale-105 active:scale-95 uppercase text-[13px] tracking-widest">Abrir Nueva Sesión</button>) : (<div className="bg-white/5 border border-white/10 text-slate-600 font-bold py-5 rounded-2xl text-center flex items-center justify-center space-x-2"><Icon name="alert" className="w-4 h-4 opacity-30" /><span className="uppercase text-[10px] tracking-widest">Receso Legislativo</span></div>)}
-              </div>
-            </div>
+              {phase === 'playing' && (
+                <>
+                  {tab === 'players' && <TabPlayers gs={gs} />}
+                  {tab === 'dashboard' && <TabDashboard gs={gs} nextSituation={nextSituation} resetGame={resetGame} setTab={setTab} isHost={isHost} />}
+                  {tab === 'parliament' && <TabParliament gs={gs} castVote={castVote} finalizeVote={finalizeVote} closeResults={closeResults} isHost={isHost} playerId={playerId} setTab={setTab} nextSituation={nextSituation} setGs={setGs} updateRemote={updateRemote} />}
+                  {tab === 'negotiation' && <TabNegotiation gs={gs} setGs={setGs} updateRemote={updateRemote} />}
+                  {tab === 'logs' && <TabLogs gs={gs} />}
+                </>
+              )}
+            </main>
           </div>
         );
 
+
+
+      }
+
+      function GameOverScreen({ gs, resetGame }) {
+        const sortedPlayers = [...gs.players].sort((a, b) => (b.op + b.ap) - (a.op + a.ap));
+
         return (
-          <div className="animate-page space-y-8 relative">
-            {gs.showResults && (
-              <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-black/80 backdrop-blur-xl animate-fade-in">
-                <div className="glass max-w-4xl w-full p-12 rounded-[3.5rem] border border-white/10 shadow-2xl space-y-8 animate-jump-in">
-                  <div className="text-center space-y-2">
-                    <h2 className="text-5xl font-extrabold tracking-tight uppercase">
-                      {gs.lastResults?.needsNegotiation ? <>Consenso <span className="text-orange-500">Insuficiente</span></> : <>Resumen de <span className="text-blue-500">Votación</span></>}
-                    </h2>
-                  </div>
-                  <div className="mt-8">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
-                      <div className="space-y-4">
-                        <h3 className="text-sm font-black uppercase tracking-widest text-slate-500">Resumen de Recomendación</h3>
-                        <div className="space-y-2">
-                          {(Array.isArray(gs.lastResults?.ranking) ? gs.lastResults.ranking : Object.values(gs.lastResults?.ranking || {})).map((r, i) => (
-                            <div key={i} className={`p-4 rounded-2xl flex items-center justify-between ${i === 0 ? 'bg-blue-500/20 border border-blue-500/30' : 'bg-white/5 border border-white/10'}`}>
-                              <div className="flex items-center space-x-3">
-                                <span className="text-lg font-bold">{r.text}</span>
-                              </div>
-                              <div className="text-right">
-                                <span className="block font-black text-xl">{r.seats}</span>
-                                <span className="text-[10px] uppercase font-bold text-slate-500">Bancas</span>
-                              </div>
-                            </div>
-                          ))}
+          <div className="min-h-screen flex items-center justify-center p-8 text-white bg-black animate-page">
+            <div className="glass max-w-4xl w-full p-12 rounded-[3.5rem] space-y-12 border border-white/10 relative overflow-hidden">
+              <div className="absolute top-0 right-0 p-10 opacity-5 pointer-events-none"><Icon name="gov" className="w-64 h-64" /></div>
+
+              <div className="text-center space-y-4">
+                <div className="w-20 h-20 bg-blue-600/20 rounded-full flex items-center justify-center mx-auto border border-blue-600/30">
+                  <Icon name="stats" className="w-10 h-10 text-blue-400" />
+                </div>
+                <h2 className="text-6xl font-black uppercase tracking-tighter">Fin de la <span className="text-blue-500">Gestión</span></h2>
+                <p className="text-slate-400 text-xl font-medium max-w-xl mx-auto">{gs.gameOverReason}</p>
+              </div>
+
+              <div className="space-y-6">
+                <h3 className="text-sm font-black uppercase tracking-widest text-slate-500 border-b border-white/5 pb-4">Ranking de Capital Político</h3>
+                <div className="space-y-4">
+                  {(gs?.players || []).map((p, i) => (
+                    <div key={i} className={`flex items-center justify-between p-6 rounded-3xl border transition-all ${i === 0 ? 'bg-blue-600/10 border-blue-500/30 neon-blue' : 'bg-white/5 border-white/10 opacity-80'}`}>
+                      <div className="flex items-center space-x-6">
+                        <div className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-xl ${i === 0 ? 'bg-blue-500 text-white' : 'bg-slate-800 text-slate-500'}`}>
+                          {i + 1}
+                        </div>
+                        <div>
+                          <span className="block font-black text-2xl text-white capitalize">{p.name}</span>
+                          <span className="text-sm text-slate-500 font-bold uppercase tracking-widest">{p.party}</span>
                         </div>
                       </div>
-                      <div className="space-y-4">
-                        <h3 className="text-sm font-black uppercase tracking-widest text-slate-500">Bancas (Desglose por Opción)</h3>
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-[11px] font-bold uppercase tracking-tighter">
-                            <thead>
-                              <tr className="border-b border-white/10 text-slate-500">
-                                <th className="py-2 text-left">Actor</th>
-                                {(gs.curSit?.options || []).map((_, idx) => (
-                                  <th key={idx} className="py-2 text-center">Opt {idx + 1}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {(Array.isArray(gs.lastResults?.voterDetails) ? gs.lastResults.voterDetails : Object.values(gs.lastResults?.voterDetails || {})).map((vd, i) => (
-                                <tr key={i} className="border-b border-white/5">
-                                  <td className="py-3 flex items-center space-x-2">
-                                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: players[vd.playerIdx]?.color || '#ccc' }}></div>
-                                    <span className="truncate max-w-[80px]">{vd.playerName}</span>
-                                  </td>
-                                  {(vd.distribution || []).map((count, idx) => (
-                                    <td key={idx} className={`py-3 text-center ${count > 0 ? 'text-white' : 'text-slate-700'}`}>{count}</td>
-                                  ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                            <tfoot className="border-t-2 border-white/10 bg-white/5">
-                              <tr className="text-white font-black">
-                                <td className="py-4 px-2">TOTAL BANCAS</td>
-                                {(safeOptions).map((_, idx) => {
-                                  const totalForOpt = (Array.isArray(gs.lastResults?.voterDetails) ? gs.lastResults.voterDetails : Object.values(gs.lastResults?.voterDetails || {})).reduce((sum, vd) => {
-                                    const dist = Array.isArray(vd.distribution) ? vd.distribution : Object.values(vd.distribution || {});
-                                    return sum + (dist[idx] || 0);
-                                  }, 0);
-                                  return <td key={idx} className="py-4 text-center text-blue-400">{totalForOpt}</td>
-                                })}
-                              </tr>
-                            </tfoot>
-                          </table>
+                      <div className="text-right space-y-1">
+                        <div className="text-3xl font-black text-white">{p.op + p.ap} <span className="text-[10px] text-slate-500 uppercase tracking-tighter">Puntos</span></div>
+                        <div className="flex space-x-4 justify-end text-[12px] font-bold">
+                          <span className="text-blue-400">OP: {p.op}</span>
+                          <span className="text-emerald-400">AP: {p.ap}</span>
                         </div>
                       </div>
                     </div>
+                  ))}
+                </div>
+              </div>
 
-                    {gs.lastResults?.needsNegotiation ? (
-                      <div className="w-full">
-                        {isHost ? (
-                          <button onClick={() => {
-                            const newGs = {
-                              ...gs,
-                              showResults: false,
-                              negotiating: true,
-                              isAiProcessing: false,
-                              activeAgreements: Array.isArray(gs.activeAgreements) ? gs.activeAgreements : Object.values(gs.activeAgreements || {}),
-                              negotiationSwitches: gs.negotiationSwitches || {}
-                            };
-                            setGs(newGs);
-                            updateRemote(newGs);
-                          }} className="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-6 rounded-3xl uppercase text-sm tracking-widest">Abrir Mesa de Negociación</button>
-                        ) : (
-                          <div className="bg-orange-500/10 p-6 rounded-3xl text-center text-orange-400 font-bold uppercase text-[11px]">Esperando...</div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="w-full">
-                        {isHost ? <button onClick={closeResults} className="w-full bg-blue-600 text-white font-black py-6 rounded-3xl">Finalizar Turno</button> : <div className="bg-blue-500/10 p-6 rounded-3xl text-center">Procesando...</div>}
-                      </div>
-                    )}
-                  </div>
-                </div>
+              <button onClick={resetGame} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-6 rounded-3xl shadow-2xl shadow-blue-900/40 transition-all uppercase text-sm tracking-widest active:scale-95">Iniciar Nueva Legislatura</button>
+            </div>
+          </div>
+        );
+      }
+
+      function TabPlayers({ gs }) {
+        const players = gs?.players || [];
+        const leaderOP = [...players].sort((a, b) => (b.op || 0) - (a.op || 0))[0];
+        const leaderAP = [...players].sort((a, b) => (b.ap || 0) - (a.ap || 0))[0];
+
+        return (
+          <div className="animate-page space-y-8">
+            {/* Indicadores Superiores (KPIs Estilo Imagen) */}
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+              <div className="glass p-6 rounded-2xl border border-white/5 text-center">
+                <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Presupuesto</span>
+                <div className="text-2xl font-black text-white bg-black/40 py-2 rounded-xl border border-white/5">${gs.budget}</div>
               </div>
-            )}
-            <div className="glass p-10 rounded-[3.5rem] border-t-[8px] border-blue-600 flex flex-col md:flex-row gap-10 items-center">
-              <div className="w-full md:w-1/3 aspect-video bg-white/5 rounded-[2rem] overflow-hidden">
-                {gs?.curSit?.image && <img src={gs.curSit.image} className="w-full h-full object-cover" />}
+              <div className="glass p-6 rounded-2xl border border-white/5 text-center">
+                <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Tensión Social</span>
+                <div className="text-2xl font-black text-white bg-black/40 py-2 rounded-xl border border-white/5">{(gs.tension || 0).toFixed(1)}%</div>
               </div>
-              <div className="flex-grow space-y-4">
-                <h2 className="text-6xl font-extrabold tracking-tighter">{gs?.curSit?.id || "Situación"}</h2>
-                <p className="text-xl text-slate-300 font-medium">{gs?.curSit?.description}</p>
-                <div className="flex items-center space-x-4">
-                  <span className="bg-blue-600 text-white px-4 py-1 rounded-full text-[13px] font-black uppercase tracking-[0.2em]">Moción Legislativa</span>
-                  <span className="text-slate-400 font-bold text-[13px] uppercase">Turno: {gs?.turn || 1} | Presidente: {(players && players[gs?.ownerIdx]) ? players[gs.ownerIdx].name : "..."}</span>
-                </div>
+              <div className="glass p-6 rounded-2xl border border-white/5 text-center">
+                <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Clima Mediático</span>
+                <div className="text-2xl font-black text-white bg-black/40 py-2 rounded-xl border border-white/5">{(gs.media || 0).toFixed(1)}</div>
+              </div>
+              <div className="glass p-6 rounded-2xl border border-white/5 text-center">
+                <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Líder OP</span>
+                <div className="text-[14px] font-black text-blue-400 bg-blue-500/10 py-2 rounded-xl border border-blue-500/20 truncate px-2">{leaderOP ? `${leaderOP.name} (${leaderOP.op})` : "N/A"}</div>
+              </div>
+              <div className="glass p-6 rounded-2xl border border-white/5 text-center">
+                <span className="text-[13px] text-slate-500 font-bold uppercase block mb-1">Líder AP</span>
+                <div className="text-[14px] font-black text-emerald-400 bg-emerald-500/10 py-2 rounded-xl border border-emerald-500/20 truncate px-2">{leaderAP ? `${leaderAP.name} (${leaderAP.ap})` : "N/A"}</div>
               </div>
             </div>
-            <div className="grid lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2 space-y-8">
-                <div className="glass p-10 rounded-[3rem] space-y-8">
-                  <div className="flex justify-between items-center">
-                    <h3 className="text-sm font-black uppercase tracking-[0.3em] text-slate-500">Alternativas de Recomendación</h3>
-                    {!isAllVoted && currentVoter && (
-                      <div className="flex items-center space-x-3 bg-white/5 px-6 py-3 rounded-2xl border border-white/10">
-                        <div className="w-3 h-3 rounded-full animate-pulse shadow-[0_0_12px_rgba(59,130,246,0.5)]" style={{ backgroundColor: currentVoter.color }}></div>
-                        <span className="text-[13px] font-black uppercase tracking-widest text-slate-300">Turno de: <span className="text-white">{currentVoter.name}</span></span>
-                      </div>
-                    )}
-                  </div>
-                  <div className="grid gap-4">
-                    {safeOptions.map((o, i) => {
-                      const isVotedByCurrent = currentVoterIdx !== undefined && safeVotes[String(currentVoterIdx)] == i;
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Tabla Principal de Jugadores */}
+              <div className="lg:col-span-2 glass rounded-[2.5rem] overflow-hidden border border-white/10 flex flex-col">
+                <div className="p-8 border-b border-white/5 flex justify-between items-center">
+                  <h3 className="text-base font-black uppercase tracking-widest text-slate-300">Situación de Jugadores</h3>
+                  <Icon name="user" className="w-5 h-5 text-slate-500" />
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="text-[12px] text-slate-500 uppercase tracking-widest border-b border-white/5 bg-white/5">
+                        <th className="px-6 py-4">#</th>
+                        <th className="px-6 py-4">Nombre</th>
+                        <th className="px-6 py-4">Partido</th>
+                        <th className="px-6 py-4 text-center">OP</th>
+                        <th className="px-6 py-4 text-center">AP</th>
+                        <th className="px-6 py-4 text-center">Total</th>
+                        <th className="px-6 py-4 text-center">Bancas</th>
+                        <th className="px-6 py-4 text-center">Lealtad</th>
+                        <th className="px-6 py-4 text-center">Conf.</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-[14px] font-medium">
+                      {(gs?.players || []).map((p, i) => (
+                        <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                          <td className="px-6 py-4 text-slate-500 font-mono">{i + 1}</td>
+                          <td className="px-6 py-4 font-bold text-white">{p.name}</td>
+                          <td className="px-6 py-4"><span className="px-2 py-1 rounded-lg text-[10px] bg-white/5 border border-white/10" style={{ color: p.color }}>{p.party}</span></td>
+                          <td className="px-6 py-4 text-center font-mono text-blue-400">{p.op}</td>
+                          <td className="px-6 py-4 text-center font-mono text-emerald-400">{p.ap}</td>
+                          <td className="px-6 py-4 text-center font-mono text-white">{p.op + p.ap}</td>
+                          <td className="px-6 py-4 text-center font-mono text-blue-500 font-bold">{p.seats}</td>
+                          <td className="px-6 py-4 text-center font-mono text-slate-400">{(p.loyalty || 0).toFixed(0)}%</td>
+                          <td className="px-6 py-4 text-center">
+                            <div className="w-12 h-1 bg-slate-800 rounded-full mx-auto overflow-hidden">
+                              <div className="h-full bg-blue-500" style={{ width: `${p.ap}%` }}></div>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Paneles Laterales */}
+              <div className="space-y-8">
+                {/* Partidos en vivo */}
+                <div className="glass rounded-[2rem] p-6 border border-white/10">
+                  <h3 className="text-[13px] font-black uppercase tracking-widest text-slate-500 mb-6 flex justify-between">
+                    <span>Partidos (En Vivo)</span>
+                    <Icon name="stats" className="w-4 h-4" />
+                  </h3>
+                  <div className="space-y-4">
+                    {(Object.keys(EXTERNAL_DATA.PARTIES) || []).map((party, idx) => {
+                      const pData = (gs?.players || []).filter(p => p && p.party === party);
+                      if (pData.length === 0) return null;
+                      const totalAP = pData.reduce((acc, curr) => acc + (curr?.ap || 0), 0);
                       return (
-                        <button key={i} onClick={() => currentVoter && !currentVoter.isAI && castVote(i)} disabled={!currentVoter || currentVoter.isAI || isAllVoted} className={`p-8 rounded-[2rem] border-2 text-left transition-all ${isVotedByCurrent ? 'bg-blue-600/10 border-blue-500' : 'bg-white/5 border-white/5'}`}>
-                          <div className="flex justify-between items-center">
-                            <div className="space-y-2">
-                              <span className="text-2xl font-bold block">{o?.text}</span>
-                              <span className="text-[13px] text-slate-500 uppercase font-bold tracking-widest">Costo: ${o?.cost}M</span>
-                            </div>
-                            <div className="flex -space-x-2">
-                              {safeVoterQueue.map(vIdx => (safeVotes[String(vIdx)] == i) ? (<div key={vIdx} className="w-7 h-7 rounded-full border-2 border-[#0a0b10]" style={{ backgroundColor: players[vIdx]?.color || '#ccc' }}></div>) : null)}
-                            </div>
+                        <div key={idx} className="flex justify-between items-center bg-black/20 p-4 rounded-2xl border border-white/5">
+                          <div className="space-y-1">
+                            <span className="text-[13px] font-bold text-slate-200 block">{party}</span>
+                            <span className="text-[10px] text-slate-500 uppercase">Jugs: {pData.length}</span>
                           </div>
-                        </button>
+                          <div className="text-right">
+                            <span className="text-xl font-black text-blue-400 leading-none block">{totalAP}</span>
+                            <span className="text-[7px] text-slate-500 uppercase font-bold">AP Total</span>
+                          </div>
+                        </div>
                       );
                     })}
                   </div>
-                  <div className="flex justify-between items-center pt-8 border-t border-white/5">
-                    <span className="text-[13px] text-slate-600 font-bold uppercase">Orden: {safeVoterQueue.map(v => v + 1).join('-')}</span>
-                    {isAllVoted && (<button onClick={() => finalizeVote()} className="bg-white text-black font-black px-12 py-5 rounded-2xl">VOTAR</button>)}
+                </div>
+
+                {/* Sectores */}
+                <div className="glass rounded-[2rem] p-6 border border-white/10">
+                  <h3 className="text-[13px] font-black uppercase tracking-widest text-slate-500 mb-6 flex justify-between">
+                    <span>Sectores (Peso + Conf)</span>
+                    <Icon name="law" className="w-4 h-4" />
+                  </h3>
+                  <div className="space-y-3 max-h-[500px] overflow-y-auto px-2 custom-scrollbar">
+                    {(gs?.sectors || []).map((s, i) => {
+                      const totalWeight = (gs?.sectors || []).reduce((acc, curr) => acc + (curr?.weight || 0), 0);
+                      const percentage = totalWeight > 0 ? (((s?.weight || 0) / totalWeight) * 100).toFixed(1) : 0;
+                      return (
+                        <div key={i} className="flex justify-between items-center text-[13px] group py-1 border-b border-white/5 last:border-0">
+                          <span className="text-slate-400 group-hover:text-white transition-colors capitalize w-1/3 truncate" title={s.name}>{s.name}</span>
+                          <div className="flex items-center space-x-3 justify-end w-2/3">
+                            <span className="font-mono text-slate-500 bg-white/5 px-2 py-0.5 rounded text-[11px] w-16 text-center">{percentage}%</span>
+                            <span className={`font-mono font-black w-8 text-right ${s.value > 500 ? 'text-emerald-400' : 'text-red-400'}`}>{s.value}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
-              <div className="space-y-8">
-                <div className="glass p-8 rounded-[2.5rem]">
-                  <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-4 text-center">Hemiciclo Legislativo</h3>
-                  <div className="flex flex-wrap justify-center p-6 bg-black/40 rounded-[2rem]">
-                    {players.map((p, pIdx) => Array.from({ length: (p?.seats || 0) }).map((_, i) => (
-                      <div key={`${p?.id || pIdx}-${i}`} className="parliament-dot" style={{ backgroundColor: p?.color || '#333' }}></div>
-                    )))}
-                  </div>
-                </div>
+            </div>
+          </div>
+        );
+      }
 
-                {/* Matriz de Persuasión (Losers) */}
-                {gs.negotiating && (
-                  <div className="space-y-4">
-                    <h4 className="text-[13px] font-black uppercase tracking-widest text-slate-500 mb-2">Diputados Indecisos (Matriz de Compromisos)</h4>
-                    <div className="grid gap-3">
-                      {(gs?.players || []).map((p, pIdx) => {
-                        const originalVote = safeVotes[String(pIdx)];
-                        const currentVote = gs?.negotiationSwitches?.[pIdx] ?? originalVote;
-                        const isTopOption = safeTopOptions.some(entry => entry && entry[0] && parseInt(entry[0]) == currentVote);
+      function TabDashboard({ gs, nextSituation, resetGame, setTab, isHost }) {
+        // Safety check for gs presence
+        if (!gs) return <div className="p-20 text-center opacity-50 uppercase font-black text-xs tracking-widest">Cargando Datos...</div>;
 
-                        // Si ya está en una opción ganadora, no mostramos el formulario (ya está persuadido o es original)
-                        const originallyLost = !safeTopOptions.some(entry => entry && entry[0] && parseInt(entry[0]) === originalVote);
+        const owner = (gs?.players && gs?.players[gs?.ownerIdx % (gs?.players?.length || 1)]) || null;
+        // Recuperar la situación fresca de EXTERNAL_DATA para asegurar que la URL de la imagen esté actualizada
+        // y no sea un dato obsoleto del localStorage
+        const curSit = gs?.curSit ? (EXTERNAL_DATA.SITUATIONS.find(s => s.id === gs.curSit.id) || gs.curSit) : null;
+        const [imgError, setImgError] = useState(false);
 
-                        if (!originallyLost && currentVote === originalVote) return null; // Es un ganador original
+        useEffect(() => {
+          setImgError(false);
+        }, [curSit?.id]);
 
-                        return (
-                          <div key={pIdx} className="glass p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row items-center gap-4">
-                            <div className="flex items-center space-x-3 w-full md:w-1/4">
-                              <div className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm text-black" style={{ backgroundColor: p?.color || '#ccc' }}>{(p?.name || '?').charAt(0)}</div>
-                              <div>
-                                <div className="flex items-center space-x-2">
-                                  <span className="block font-bold text-base text-white">{p?.name || '---'}</span>
-                                  {gs.isAiProcessing && !p?.isAI && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 rounded-full border border-blue-500/30 animate-pulse">Pensando...</span>}
-                                  {gs.negotiationSwitches?.[pIdx] !== undefined && <Icon name="check" className="w-3 h-3 text-emerald-500" />}
-                                </div>
-                                <span className="text-[12px] text-slate-500 uppercase font-bold tracking-widest">{p?.party || '---'}</span>
-                              </div>
-                            </div>
+        return (
+          <div className="animate-page space-y-8">
+            {/* Indicadores Clave */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <KPICard label="Presupuesto" value={`$${gs.budget || 0}M`} icon="gov" color="text-blue-400" />
+              <KPICard label="Tensión Social" value={`${(gs.tension || 0).toFixed(1)}%`} icon="stats" color={(gs.tension || 0) > 5 ? "text-red-400" : "text-emerald-400"} />
+              <KPICard label="Clima Mediático" value={(gs.media || 0).toFixed(1)} icon="shake" color="text-purple-400" />
+              <KPICard label="Turno" value={`${gs.turn || 1}/12`} icon="law" color="text-orange-400" />
+            </div>
 
-                            <div className="flex-grow grid grid-cols-1 md:grid-cols-3 gap-2 w-full">
-                              {/* Selector Opción */}
-                              <select
-                                className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm font-bold text-slate-300 focus:border-blue-500 outline-none"
-                                onChange={(e) => {
-                                  const targetOptIdx = parseInt(e.target.value);
-                                  setGs(prev => ({
-                                    ...prev,
-                                    negotiationSwitches: { ...prev.negotiationSwitches, [pIdx]: targetOptIdx }
-                                  }));
-                                }}
-                                value={currentVote !== undefined && !originallyLost ? currentVote : (gs.negotiationSwitches?.[pIdx] ?? "")}
-                              >
-                                <option value="">Cambiar voto a...</option>
-                                {safeTopOptions.map((entry) => entry && entry[0] && (
-                                  <option key={entry[0]} value={entry[0]}>{safeOptions[parseInt(entry[0])]?.text}</option>
-                                ))}
-                              </select>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <div className="lg:col-span-2 glass rounded-[2.5rem] p-10 flex flex-col md:flex-row gap-8 items-center bg-gradient-to-br from-blue-500/5 to-transparent relative overflow-hidden h-full">
+                <div className="absolute top-0 right-0 p-10 opacity-5 pointer-events-none"><Icon name="law" className="w-64 h-64" /></div>
 
-                              {/* Selector Objetivo (Persuador) */}
-                              <select className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm font-bold text-slate-300 focus:border-blue-500 outline-none" id={`target-${pIdx}`}>
-                                <option value="">Exigir compromiso a...</option>
-                                {(gs?.players || []).map((target, tIdx) => {
-                                  // Solo mostrar jugadores que apoyan la opción seleccionada actualmente por el perdedor
-                                  const targetSupport = gs?.negotiationSwitches?.[tIdx] ?? gs?.votes?.[tIdx];
-                                  if (currentVote !== undefined && targetSupport === currentVote && tIdx !== pIdx) {
-                                    return <option key={tIdx} value={tIdx}>{target ? target.name : `IA ${tIdx}`}</option>
-                                  }
-                                  return null;
-                                })}
-                              </select>
-
-                              {/* Selector Beneficio */}
-                              <select className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm font-bold text-slate-300 focus:border-blue-500 outline-none" id={`benefit-${pIdx}`}>
-                                <option value="align">Votar igual que yo (Futuro)</option>
-                                <option value="block">Votar en contra de rival</option>
-                                <option value="support">Apoyar mi moción</option>
-                              </select>
-                            </div>
-
+                {curSit ? (
+                  <>
+                    <div className="w-full md:w-1/2 aspect-video bg-white/5 rounded-[2rem] border border-white/10 flex items-center justify-center overflow-hidden relative shadow-2xl shrink-0 group">
+                      {curSit.image && !imgError ? (
+                        <img
+                          src={curSit.image}
+                          alt={curSit.id}
+                          referrerPolicy="no-referrer"
+                          onError={() => setImgError(true)}
+                          className="w-full h-full object-cover opacity-80 transition-transform duration-700 group-hover:scale-110"
+                        />
+                      ) : (
+                        <div className="absolute inset-0 bg-gradient-to-br from-blue-500/20 to-purple-500/20 flex flex-col items-center justify-center text-slate-500 space-y-2">
+                          <Icon name="alert" className="w-12 h-12 opacity-50" />
+                          {imgError && (
                             <button
-                              onClick={() => {
-                                const targetSelect = document.getElementById(`target-${pIdx}`);
-                                const benefitSelect = document.getElementById(`benefit-${pIdx}`);
-                                if (!gs.negotiationSwitches?.[pIdx] || !targetSelect.value) {
-                                  alert("Debes seleccionar una opción y un destinatario para el pacto.");
-                                  return;
-                                }
-
-                                const targetIdx = parseInt(targetSelect.value);
-                                const benefitType = benefitSelect.value;
-                                const benefitText = benefitSelect.options[benefitSelect.selectedIndex].text;
-
-                                const newAgreement = {
-                                  promisorIdx: targetIdx,
-                                  promisorName: (gs.players && gs.players[targetIdx]) ? gs.players[targetIdx].name : `Actor ${targetIdx}`,
-                                  beneficiaryIdx: pIdx,
-                                  beneficiaryName: p?.name || `Actor ${pIdx}`,
-                                  type: benefitType, // 'align', 'block', 'support'
-                                  detail: benefitText,
-                                  status: 'Pendiente',
-                                  turnCreated: gs.turn,
-                                  turnResolved: null
-                                };
-
-                                const rawActive = gs?.activeAgreements || [];
-                                const safeActive = Array.isArray(rawActive) ? rawActive : Object.values(rawActive);
-
-                                const rawLogs = gs?.logs || [];
-                                const safeLogs = Array.isArray(rawLogs) ? rawLogs : Object.values(rawLogs);
-
-                                const updatedAgreements = [...safeActive, newAgreement];
-                                const updatedLogs = [`Convenio: ${p?.name || 'Actor'} exige compromiso a ${(gs?.players && gs?.players[targetIdx]) ? gs.players[targetIdx].name : 'Actor'} ("${benefitText}")`, ...safeLogs];
-
-                                const newGs = {
-                                  ...gs,
-                                  activeAgreements: updatedAgreements,
-                                  logs: updatedLogs
-                                };
-
-                                setGs(newGs);
-                                updateRemote(newGs);
-                              }}
-                              className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
-                              title="Formalizar Acuerdo"
+                              onClick={() => setImgError(false)}
+                              className="text-[13px] uppercase font-bold border border-white/10 px-3 py-1 rounded-full hover:bg-white/10 hover:text-white transition-colors"
                             >
-                              <Icon name="law" className="w-5 h-5 group-hover:rotate-12 transition-transform" />
-                              <span className="text-[11px] font-black uppercase tracking-widest">Pactar</span>
+                              Reintentar Imagen
                             </button>
-                          </div>
-                        );
-                      })}
+                          )}
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent"></div>
+                      <div className="absolute bottom-4 left-6">
+                        <span className="bg-red-600 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest animate-pulse">Emergencia Activa</span>
+                      </div>
                     </div>
-                  </div>
-                )}
-
-                {/* Botonera Final */}
-                {gs.negotiating && (
-                  <div className="mt-8 pt-6 border-t border-white/5 flex justify-between items-center">
-                    <div className="text-[13px] uppercase font-bold text-slate-500">
-                      Acuerdos Pendientes: <span className="text-white">{safeAgreements.length}</span>
+                    <div className="flex-grow space-y-4">
+                      <div className="space-y-1">
+                        <span className="text-blue-400 font-bold text-[13px] uppercase tracking-widest">Turno {gs?.turn || 1} / 12</span>
+                        <h2 className="text-5xl font-black tracking-tight leading-none text-white">{curSit?.id || "---"}</h2>
+                      </div>
+                      <p className="text-base text-slate-400 font-medium leading-relaxed line-clamp-3">
+                        {curSit?.description || "---"}
+                      </p>
+                      <div className="flex space-x-3 pt-2">
+                        <button onClick={() => setTab('parliament')} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-8 py-4 rounded-2xl shadow-xl shadow-blue-900/40 transition-all active:scale-95 uppercase text-[13px] tracking-widest">Ir a Votación</button>
+                        {isHost && <button onClick={resetGame} className="bg-white/5 border border-white/10 text-slate-500 font-bold px-6 py-4 rounded-2xl transition-all uppercase text-[13px] tracking-widest hover:bg-red-500/20 hover:text-red-400">Reiniciar</button>}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="space-y-8">
+                    <div className="space-y-2">
+                      <span className="text-blue-400 font-bold text-sm uppercase tracking-widest">Turno de Presidencia (Dueño): {owner ? owner?.name : "..."}</span>
+                      <h2 className="text-6xl font-bold tracking-tight">Estado de la <span className="gradient-text">Unión</span></h2>
                     </div>
                     <div className="flex space-x-4">
-                      <button onClick={() => setGs(p => ({ ...p, negotiating: false, curSit: null, logs: ["Moción retirada.", ...p.logs] }))} className="px-6 py-3 rounded-2xl text-[13px] font-bold uppercase text-red-500 hover:bg-red-500/10 transition-colors">
-                        Retirar
-                      </button>
                       {isHost ? (
-                        <button
-                          onClick={() => finalizeVote()}
-                          className="bg-emerald-500 hover:bg-emerald-400 text-white font-black px-8 py-3 rounded-2xl shadow-lg shadow-emerald-500/20 uppercase text-[13px] tracking-widest transition-all"
-                        >
-                          Someter a Votación Final
-                        </button>
+                        <>
+                          <button onClick={nextSituation} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-10 py-5 rounded-2xl shadow-xl shadow-blue-900/40 transition-all active:scale-95 uppercase text-[13px] tracking-widest">Abrir Nueva Sesión</button>
+                          <button onClick={resetGame} className="bg-red-500/10 border border-red-500/20 text-red-500 font-bold px-10 py-5 rounded-2xl transition-all uppercase text-[13px] tracking-widest hover:bg-red-500 hover:text-white">Reiniciar Partida</button>
+                        </>
                       ) : (
-                        <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-6 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest italic">
-                          Esperando Votación Final (Anfitrión)
+                        <div className="bg-blue-500/10 border border-blue-500/20 p-6 rounded-2xl">
+                          <p className="text-blue-400 font-black uppercase text-xs tracking-widest animate-pulse italic">Esperando que el Presidente abra la sesión...</p>
                         </div>
                       )}
                     </div>
                   </div>
                 )}
               </div>
-            </div>
-          </div>
-        );
-      } catch (err) {
-        return (
-          <div className="p-10 bg-red-900/50 text-white rounded-3xl">
-            <h3>Error: {err.message}</h3>
-            <pre className="text-[10px]">{JSON.stringify(props.gs, null, 2)}</pre>
-          </div>
-        );
-      }
-    }
 
-    function TabNegotiation({ gs, setGs, updateRemote }) {
-      try {
-        if (!gs) return null;
-        console.log("Render TabNegotiation, GS:", gs);
-        const pastPacts = Array.isArray(gs?.pacts) ? gs.pacts : Object.values(gs?.pacts || {});
-        const activeAgreements = Array.isArray(gs?.activeAgreements) ? gs.activeAgreements : Object.values(gs?.activeAgreements || {});
-
-        // Merge them for display
-        const allPacts = [...activeAgreements, ...pastPacts];
-        const players = gs?.players || [];
-
-        return (
-          <div className="animate-page space-y-8">
-            <div className="text-center space-y-2">
-              <h2 className="text-5xl font-extrabold tracking-tight uppercase">Libro de <span className="text-orange-500">Pactos</span></h2>
-              <p className="text-slate-500 font-medium">Registro histórico de compromisos, alianzas y prebendas legislativas.</p>
-            </div>
-
-            {allPacts.length === 0 ? (
-              <div className="glass rounded-[3rem] p-16 text-center space-y-6 opacity-60">
-                <Icon name="shake" className="w-16 h-16 text-slate-700 mx-auto" />
-                <p className="text-slate-500 uppercase text-sm font-black tracking-widest">No hay registros de pactos en esta administración</p>
-              </div>
-            ) : (
-              <div className="glass rounded-[2.5rem] overflow-hidden border border-white/10">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-white/5 text-slate-500 uppercase text-[12px] font-black tracking-widest">
-                      <th className="px-8 py-6">Promitente</th>
-                      <th className="px-8 py-6">Beneficiario</th>
-                      <th className="px-8 py-6">Compromiso</th>
-                      <th className="px-8 py-6 text-center">Estado</th>
-                      <th className="px-4 py-6 text-center">T. Pacto</th>
-                      <th className="px-4 py-6 text-right">T. Resol.</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-[14px]">
-                    {allPacts.map((pact, i) => (
-                      <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors group">
-                        <td className="px-8 py-6 font-bold text-white">
-                          <div className="flex items-center space-x-3">
-                            <div className="w-2 h-8 rounded-full" style={{ backgroundColor: gs.players?.[pact.promisorIdx]?.color || '#ccc' }}></div>
-                            <span>{pact.promisorName}</span>
-                          </div>
-                        </td>
-                        <td className="px-8 py-6 text-slate-300">
-                          <div className="flex items-center space-x-3">
-                            <Icon name="user" className="w-4 h-4 opacity-30" />
-                            <span>{pact.beneficiaryName}</span>
-                          </div>
-                        </td>
-                        <td className="px-8 py-6">
-                          <div className="space-y-1">
-                            <span className="text-blue-400 font-bold block">{pact.detail}</span>
-                            <span className="text-[10px] text-slate-500 uppercase font-black">Turno {pact.turnCreated}</span>
-                          </div>
-                        </td>
-                        <td className="px-8 py-6 text-center">
-                          <span className={`px-4 py-2 rounded-xl text-[12px] font-black uppercase tracking-widest border border-current bg-current/10 ${pact.status === 'Cumplido' ? 'text-emerald-400' :
-                            pact.status === 'Traición' ? 'text-red-500' : 'text-orange-400 animate-pulse'
-                            }`}>
-                            {pact.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-6 text-center font-mono text-slate-500">
-                          #{pact.turnCreated}
-                        </td>
-                        <td className="px-4 py-6 text-right font-mono text-slate-300">
-                          {pact.turnResolved ? `#${pact.turnResolved}` : '--'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        );
-      } catch (err) {
-        return (
-          <div className="p-10 bg-red-900/50 text-white rounded-3xl">
-            <h3>Error en Pactos: {err.message}</h3>
-            <pre className="text-[10px]">{JSON.stringify(gs, null, 2)}</pre>
-          </div>
-        );
-      }
-    }
-
-    function TabLogs({ gs }) {
-      const logs = gs?.logs || [];
-      return (
-        <div className="animate-page space-y-4 max-h-[750px] overflow-y-auto pr-6 custom-scrollbar">
-          {logs.map((l, i) => (
-            <div key={i} className="glass p-8 rounded-[2rem] border-l-8 border-blue-500/30 flex space-x-6 items-center bg-gradient-to-r from-blue-500/5 to-transparent group hover:border-blue-500 transition-all">
-              <div className="text-blue-500/20 font-mono text-4xl group-hover:text-blue-500/40 transition-colors">#{logs.length - i}</div>
-              <div className="space-y-2 flex-grow">
-                <p className="text-slate-200 text-xl font-bold">{l}</p>
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] text-slate-600 uppercase font-bold tracking-widest">Publicado por la Secretaría General del Palacio</span>
-                  <span className="text-[10px] text-blue-500/50 font-mono">STAMP: {new Date().toLocaleTimeString()}</span>
+              <div className="glass rounded-[2.5rem] p-8 space-y-6 flex flex-col h-full">
+                <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest">Sectores Sociales</h3>
+                <div className="space-y-4 overflow-y-auto px-2 custom-scrollbar flex-grow">
+                  {(gs?.sectors || []).map((s, i) => (
+                    <div key={i} className="space-y-1">
+                      <div className="flex justify-between text-[13px] font-bold uppercase"><span>{s?.name}</span><span className={(s?.value || 0) > 500 ? "text-emerald-400" : "text-red-400"}>{s?.value}</span></div>
+                      <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
+                        <div className={`h-full ${(s?.value || 0) > 500 ? "bg-emerald-500" : "bg-red-500"}`} style={{ width: `${(s?.value || 0) / 10}%` }}></div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
-          ))}
-        </div>
-      );
-    }
 
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(
-      <ErrorBoundary>
-        <App />
-      </ErrorBoundary>
-    );
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+              {(gs?.players || []).map((p, i) => (
+                <div key={i} className={`glass p-6 rounded-3xl border-t-[6px] transition-all relative ${gs.ownerIdx === i ? 'neon-blue scale-105 z-10' : 'opacity-80'}`} style={{ borderTopColor: p?.color }}>
+                  {gs.ownerIdx === i && <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-600 text-[10px] font-black px-3 py-1 rounded-full text-white uppercase tracking-tighter">Presidente</div>}
+                  <span className="text-[13px] text-slate-500 font-bold block mb-1">{p?.party}</span>
+                  <h4 className="font-bold text-xl mb-2">{p?.name}</h4>
+                  <div className="flex justify-between text-[13px] mb-1"><span>Escaños</span><span className="text-blue-400 font-bold">{p?.seats}</span></div>
+                  <div className="flex justify-between text-[13px] text-slate-500 font-bold"><span>Lealtad</span><span>{p?.loyalty ? p.loyalty.toFixed(0) : 0}%</span></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      }
+
+      function TabParliament(props) {
+        try {
+          const { gs, castVote, finalizeVote, closeResults, isHost, playerId, setTab, nextSituation, setGs, updateRemote } = props;
+          if (!gs) return null;
+
+          const players = gs?.players || [];
+          const currentVoterPos = typeof gs.currentVoterPos === 'number' ? gs.currentVoterPos : 0;
+          const voterQueue = gs?.voterQueue || [];
+          const currentVoterIdx = voterQueue[currentVoterPos];
+          const currentVoter = (currentVoterIdx !== undefined && players[currentVoterIdx]) ? players[currentVoterIdx] : null;
+          const votes = gs?.votes || {};
+          const isAllVoted = votes && players.length > 0 && Object.keys(votes).length >= players.length;
+
+          const safeOptions = Array.isArray(gs?.curSit?.options) ? gs.curSit.options : Object.values(gs?.curSit?.options || {});
+          const safeVoterQueue = Array.isArray(gs?.voterQueue) ? gs.voterQueue : Object.values(gs?.voterQueue || {});
+          const safeVotes = gs?.votes || {};
+          const safeAgreements = Array.isArray(gs?.activeAgreements) ? gs.activeAgreements : Object.values(gs?.activeAgreements || {});
+          const safeTopOptions = Array.isArray(gs?.topOptions) ? gs.topOptions : Object.values(gs?.topOptions || {});
+
+          if (!gs.curSit) return (
+            <div className="animate-page space-y-8">
+              <div className="glass rounded-[3rem] p-20 flex flex-col items-center justify-center text-center space-y-8 relative overflow-hidden bg-gradient-to-br from-blue-500/5 to-transparent min-h-[500px]">
+                <div className="absolute top-0 right-0 p-10 opacity-5"><Icon name="law" className="w-64 h-64" /></div>
+                <div className="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center text-slate-700 border border-white/10 relative">
+                  <Icon name="law" className="w-12 h-12" />
+                  <div className="absolute -bottom-1 -right-1 bg-red-500/20 text-red-500 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border border-red-500/30">Offline</div>
+                </div>
+                <div className="space-y-4 max-w-xl">
+                  <h2 className="text-6xl font-extrabold tracking-tighter uppercase">Cámara en <span className="text-blue-500">Receso</span></h2>
+                  <p className="text-slate-400 font-medium text-xl leading-relaxed">El Palacio Legislativo se encuentra actualmente en periodo de receso.</p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-md">
+                  <button onClick={() => setTab('dashboard')} className="glass bg-white/5 border border-white/10 text-slate-500 font-bold py-5 rounded-2xl hover:bg-white/10 transition-all uppercase text-[13px] tracking-widest">Tablero de Control</button>
+                  {isHost ? (<button onClick={nextSituation} className="bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-500/20 transition-all hover:scale-105 active:scale-95 uppercase text-[13px] tracking-widest">Abrir Nueva Sesión</button>) : (<div className="bg-white/5 border border-white/10 text-slate-600 font-bold py-5 rounded-2xl text-center flex items-center justify-center space-x-2"><Icon name="alert" className="w-4 h-4 opacity-30" /><span className="uppercase text-[10px] tracking-widest">Receso Legislativo</span></div>)}
+                </div>
+              </div>
+            </div>
+          );
+
+          return (
+            <div className="animate-page space-y-8 relative">
+              {gs.showResults && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-black/80 backdrop-blur-xl animate-fade-in">
+                  <div className="glass max-w-4xl w-full p-12 rounded-[3.5rem] border border-white/10 shadow-2xl space-y-8 animate-jump-in">
+                    <div className="text-center space-y-2">
+                      <h2 className="text-5xl font-extrabold tracking-tight uppercase">
+                        {gs.lastResults?.needsNegotiation ? <>Consenso <span className="text-orange-500">Insuficiente</span></> : <>Resumen de <span className="text-blue-500">Votación</span></>}
+                      </h2>
+                    </div>
+                    <div className="mt-8">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
+                        <div className="space-y-4">
+                          <h3 className="text-sm font-black uppercase tracking-widest text-slate-500">Resumen de Recomendación</h3>
+                          <div className="space-y-2">
+                            {(Array.isArray(gs.lastResults?.ranking) ? gs.lastResults.ranking : Object.values(gs.lastResults?.ranking || {})).map((r, i) => (
+                              <div key={i} className={`p-4 rounded-2xl flex items-center justify-between ${i === 0 ? 'bg-blue-500/20 border border-blue-500/30' : 'bg-white/5 border border-white/10'}`}>
+                                <div className="flex items-center space-x-3">
+                                  <span className="text-lg font-bold">{r.text}</span>
+                                </div>
+                                <div className="text-right">
+                                  <span className="block font-black text-xl">{r.seats}</span>
+                                  <span className="text-[10px] uppercase font-bold text-slate-500">Bancas</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="space-y-4">
+                          <h3 className="text-sm font-black uppercase tracking-widest text-slate-500">Bancas (Desglose por Opción)</h3>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-[11px] font-bold uppercase tracking-tighter">
+                              <thead>
+                                <tr className="border-b border-white/10 text-slate-500">
+                                  <th className="py-2 text-left">Actor</th>
+                                  {(gs.curSit?.options || []).map((_, idx) => (
+                                    <th key={idx} className="py-2 text-center">Opt {idx + 1}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(Array.isArray(gs.lastResults?.voterDetails) ? gs.lastResults.voterDetails : Object.values(gs.lastResults?.voterDetails || {})).map((vd, i) => (
+                                  <tr key={i} className="border-b border-white/5">
+                                    <td className="py-3 flex items-center space-x-2">
+                                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: players[vd.playerIdx]?.color || '#ccc' }}></div>
+                                      <span className="truncate max-w-[80px]">{vd.playerName}</span>
+                                    </td>
+                                    {(vd.distribution || []).map((count, idx) => (
+                                      <td key={idx} className={`py-3 text-center ${count > 0 ? 'text-white' : 'text-slate-700'}`}>{count}</td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                              <tfoot className="border-t-2 border-white/10 bg-white/5">
+                                <tr className="text-white font-black">
+                                  <td className="py-4 px-2">TOTAL BANCAS</td>
+                                  {(safeOptions).map((_, idx) => {
+                                    const totalForOpt = (Array.isArray(gs.lastResults?.voterDetails) ? gs.lastResults.voterDetails : Object.values(gs.lastResults?.voterDetails || {})).reduce((sum, vd) => {
+                                      const dist = Array.isArray(vd.distribution) ? vd.distribution : Object.values(vd.distribution || {});
+                                      return sum + (dist[idx] || 0);
+                                    }, 0);
+                                    return <td key={idx} className="py-4 text-center text-blue-400">{totalForOpt}</td>
+                                  })}
+                                </tr>
+                              </tfoot>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+
+                      {gs.lastResults?.needsNegotiation ? (
+                        <div className="w-full">
+                          {isHost ? (
+                            <button onClick={() => {
+                              const newGs = {
+                                ...gs,
+                                showResults: false,
+                                negotiating: true,
+                                isAiProcessing: false,
+                                activeAgreements: Array.isArray(gs.activeAgreements) ? gs.activeAgreements : Object.values(gs.activeAgreements || {}),
+                                negotiationSwitches: gs.negotiationSwitches || {}
+                              };
+                              setGs(newGs);
+                              updateRemote(newGs);
+                            }} className="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-6 rounded-3xl uppercase text-sm tracking-widest">Abrir Mesa de Negociación</button>
+                          ) : (
+                            <div className="bg-orange-500/10 p-6 rounded-3xl text-center text-orange-400 font-bold uppercase text-[11px]">Esperando...</div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="w-full">
+                          {isHost ? <button onClick={closeResults} className="w-full bg-blue-600 text-white font-black py-6 rounded-3xl">Finalizar Turno</button> : <div className="bg-blue-500/10 p-6 rounded-3xl text-center">Procesando...</div>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="glass p-10 rounded-[3.5rem] border-t-[8px] border-blue-600 flex flex-col md:flex-row gap-10 items-center">
+                <div className="w-full md:w-1/3 aspect-video bg-white/5 rounded-[2rem] overflow-hidden">
+                  {gs?.curSit?.image && <img src={gs.curSit.image} className="w-full h-full object-cover" />}
+                </div>
+                <div className="flex-grow space-y-4">
+                  <h2 className="text-6xl font-extrabold tracking-tighter">{gs?.curSit?.id || "Situación"}</h2>
+                  <p className="text-xl text-slate-300 font-medium">{gs?.curSit?.description}</p>
+                  <div className="flex items-center space-x-4">
+                    <span className="bg-blue-600 text-white px-4 py-1 rounded-full text-[13px] font-black uppercase tracking-[0.2em]">Moción Legislativa</span>
+                    <span className="text-slate-400 font-bold text-[13px] uppercase">Turno: {gs?.turn || 1} | Presidente: {(players && players[gs?.ownerIdx]) ? players[gs.ownerIdx].name : "..."}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="grid lg:grid-cols-3 gap-8">
+                <div className="lg:col-span-2 space-y-8">
+                  <div className="glass p-10 rounded-[3rem] space-y-8">
+                    <div className="flex justify-between items-center">
+                      <h3 className="text-sm font-black uppercase tracking-[0.3em] text-slate-500">Alternativas de Recomendación</h3>
+                      {!isAllVoted && currentVoter && (
+                        <div className="flex items-center space-x-3 bg-white/5 px-6 py-3 rounded-2xl border border-white/10">
+                          <div className="w-3 h-3 rounded-full animate-pulse shadow-[0_0_12px_rgba(59,130,246,0.5)]" style={{ backgroundColor: currentVoter.color }}></div>
+                          <span className="text-[13px] font-black uppercase tracking-widest text-slate-300">Turno de: <span className="text-white">{currentVoter.name}</span></span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="grid gap-4">
+                      {safeOptions.map((o, i) => {
+                        const isVotedByCurrent = currentVoterIdx !== undefined && safeVotes[String(currentVoterIdx)] == i;
+                        return (
+                          <button key={i} onClick={() => currentVoter && !currentVoter.isAI && castVote(i)} disabled={!currentVoter || currentVoter.isAI || isAllVoted} className={`p-8 rounded-[2rem] border-2 text-left transition-all ${isVotedByCurrent ? 'bg-blue-600/10 border-blue-500' : 'bg-white/5 border-white/5'}`}>
+                            <div className="flex justify-between items-center">
+                              <div className="space-y-2">
+                                <span className="text-2xl font-bold block">{o?.text}</span>
+                                <span className="text-[13px] text-slate-500 uppercase font-bold tracking-widest">Costo: ${o?.cost}M</span>
+                              </div>
+                              <div className="flex -space-x-2">
+                                {safeVoterQueue.map(vIdx => (safeVotes[String(vIdx)] == i) ? (<div key={vIdx} className="w-7 h-7 rounded-full border-2 border-[#0a0b10]" style={{ backgroundColor: players[vIdx]?.color || '#ccc' }}></div>) : null)}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex justify-between items-center pt-8 border-t border-white/5">
+                      <span className="text-[13px] text-slate-600 font-bold uppercase">Orden: {safeVoterQueue.map(v => v + 1).join('-')}</span>
+                      {isAllVoted && (<button onClick={() => finalizeVote()} className="bg-white text-black font-black px-12 py-5 rounded-2xl">VOTAR</button>)}
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-8">
+                  <div className="glass p-8 rounded-[2.5rem]">
+                    <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-4 text-center">Hemiciclo Legislativo</h3>
+                    <div className="flex flex-wrap justify-center p-6 bg-black/40 rounded-[2rem]">
+                      {players.map((p, pIdx) => Array.from({ length: (p?.seats || 0) }).map((_, i) => (
+                        <div key={`${p?.id || pIdx}-${i}`} className="parliament-dot" style={{ backgroundColor: p?.color || '#333' }}></div>
+                      )))}
+                    </div>
+                  </div>
+
+                  {/* Matriz de Persuasión (Losers) */}
+                  {gs.negotiating && (
+                    <div className="space-y-4">
+                      <h4 className="text-[13px] font-black uppercase tracking-widest text-slate-500 mb-2">Diputados Indecisos (Matriz de Compromisos)</h4>
+                      <div className="grid gap-3">
+                        {(gs?.players || []).map((p, pIdx) => {
+                          const originalVote = safeVotes[String(pIdx)];
+                          const currentVote = gs?.negotiationSwitches?.[pIdx] ?? originalVote;
+                          const isTopOption = safeTopOptions.some(entry => entry && entry[0] && parseInt(entry[0]) == currentVote);
+
+                          // Si ya está en una opción ganadora, no mostramos el formulario (ya está persuadido o es original)
+                          const originallyLost = !safeTopOptions.some(entry => entry && entry[0] && parseInt(entry[0]) === originalVote);
+
+                          if (!originallyLost && currentVote === originalVote) return null; // Es un ganador original
+
+                          return (
+                            <div key={pIdx} className="glass p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row items-center gap-4">
+                              <div className="flex items-center space-x-3 w-full md:w-1/4">
+                                <div className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm text-black" style={{ backgroundColor: p?.color || '#ccc' }}>{(p?.name || '?').charAt(0)}</div>
+                                <div>
+                                  <div className="flex items-center space-x-2">
+                                    <span className="block font-bold text-base text-white">{p?.name || '---'}</span>
+                                    {gs.isAiProcessing && !p?.isAI && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 rounded-full border border-blue-500/30 animate-pulse">Pensando...</span>}
+                                    {gs.negotiationSwitches?.[pIdx] !== undefined && <Icon name="check" className="w-3 h-3 text-emerald-500" />}
+                                  </div>
+                                  <span className="text-[12px] text-slate-500 uppercase font-bold tracking-widest">{p?.party || '---'}</span>
+                                </div>
+                              </div>
+
+                              <div className="flex-grow grid grid-cols-1 md:grid-cols-3 gap-2 w-full">
+                                {/* Selector Opción */}
+                                <select
+                                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm font-bold text-slate-300 focus:border-blue-500 outline-none"
+                                  onChange={(e) => {
+                                    const targetOptIdx = parseInt(e.target.value);
+                                    const newGs = {
+                                      ...gs,
+                                      negotiationSwitches: { ...(gs.negotiationSwitches || {}), [pIdx]: targetOptIdx }
+                                    };
+                                    setGs(newGs);
+                                    updateRemote(newGs);
+                                  }}
+                                  value={currentVote !== undefined && !originallyLost ? currentVote : (gs.negotiationSwitches?.[pIdx] ?? "")}
+                                >
+                                  <option value="">Cambiar voto a...</option>
+                                  {safeTopOptions.map((entry) => entry && entry[0] && (
+                                    <option key={entry[0]} value={entry[0]}>{safeOptions[parseInt(entry[0])]?.text}</option>
+                                  ))}
+                                </select>
+
+                                {/* Selector Objetivo (Persuador) */}
+                                <select className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm font-bold text-slate-300 focus:border-blue-500 outline-none" id={`target-${pIdx}`}>
+                                  <option value="">Exigir compromiso a...</option>
+                                  {(gs?.players || []).map((target, tIdx) => {
+                                    // Solo mostrar jugadores que apoyan la opción seleccionada actualmente por el perdedor
+                                    const targetSupport = gs?.negotiationSwitches?.[tIdx] ?? gs?.votes?.[tIdx];
+                                    if (currentVote !== undefined && targetSupport === currentVote && tIdx !== pIdx) {
+                                      return <option key={tIdx} value={tIdx}>{target ? target.name : `IA ${tIdx}`}</option>
+                                    }
+                                    return null;
+                                  })}
+                                </select>
+
+                                {/* Selector Beneficio */}
+                                <select className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm font-bold text-slate-300 focus:border-blue-500 outline-none" id={`benefit-${pIdx}`}>
+                                  <option value="align">Votar igual que yo (Futuro)</option>
+                                  <option value="block">Votar en contra de rival</option>
+                                  <option value="specific">Votar por una opción específica</option>
+                                  <option value="support">Apoyar mi moción actual</option>
+                                </select>
+                              </div>
+
+                              <button
+                                onClick={() => {
+                                  const targetSelect = document.getElementById(`target-${pIdx}`);
+                                  const benefitSelect = document.getElementById(`benefit-${pIdx}`);
+                                  if (!gs.negotiationSwitches?.[pIdx] || !targetSelect.value) {
+                                    alert("Debes seleccionar una opción y un destinatario para el pacto.");
+                                    return;
+                                  }
+
+                                  const targetIdx = parseInt(targetSelect.value);
+                                  const benefitType = benefitSelect.value;
+                                  const benefitText = benefitSelect.options[benefitSelect.selectedIndex].text;
+
+                                  const newAgreement = {
+                                    promisorIdx: targetIdx,
+                                    promisorName: (gs.players && gs.players[targetIdx]) ? gs.players[targetIdx].name : `Actor ${targetIdx}`,
+                                    beneficiaryIdx: pIdx,
+                                    beneficiaryName: p?.name || `Actor ${pIdx}`,
+                                    type: benefitType,
+                                    detail: benefitText,
+                                    status: 'Pendiente',
+                                    turnCreated: gs.turn,
+                                    turnResolved: null
+                                  };
+
+                                  const safeActive = Array.isArray(gs.activeAgreements) ? gs.activeAgreements : Object.values(gs.activeAgreements || {});
+                                  const safeLogs = Array.isArray(gs.logs) ? gs.logs : Object.values(gs.logs || {});
+
+                                  const newGs = {
+                                    ...gs,
+                                    activeAgreements: [...safeActive, newAgreement],
+                                    logs: [`PACTO: ${p?.name || 'Actor'} y ${(gs.players && gs.players[targetIdx]) ? gs.players[targetIdx].name : 'Actor'} firman: ${benefitText}`, ...safeLogs]
+                                  };
+
+                                  console.log("Creating Pact:", newAgreement);
+                                  setGs(newGs);
+                                  updateRemote(newGs);
+                                  alert("Pacto registrado y sincronizado en el Libro.");
+                                }}
+                                className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
+                                title="Formalizar Acuerdo"
+                              >
+                                <Icon name="law" className="w-5 h-5 group-hover:rotate-12 transition-transform" />
+                                <span className="text-[11px] font-black uppercase tracking-widest">Pactar</span>
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Botonera Final */}
+                  {gs.negotiating && (
+                    <div className="mt-8 pt-6 border-t border-white/5 flex justify-between items-center">
+                      <div className="text-[13px] uppercase font-bold text-slate-500">
+                        Acuerdos Pendientes: <span className="text-white">{safeAgreements.length}</span>
+                      </div>
+                      <div className="flex space-x-4">
+                        <button onClick={() => {
+                          const newGs = { ...gs, negotiating: false, curSit: null, logs: ["Moción retirada.", ...(Array.isArray(gs.logs) ? gs.logs : Object.values(gs.logs || {}))] };
+                          setGs(newGs);
+                          updateRemote(newGs);
+                        }} className="px-6 py-3 rounded-2xl text-[13px] font-bold uppercase text-red-500 hover:bg-red-500/10 transition-colors">
+                          Retirar
+                        </button>
+                        {isHost ? (
+                          <button
+                            onClick={() => finalizeVote()}
+                            className="bg-emerald-500 hover:bg-emerald-400 text-white font-black px-8 py-3 rounded-2xl shadow-lg shadow-emerald-500/20 uppercase text-[13px] tracking-widest transition-all"
+                          >
+                            Someter a Votación Final
+                          </button>
+                        ) : (
+                          <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-6 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest italic">
+                            Esperando Votación Final (Anfitrión)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        } catch (err) {
+          return (
+            <div className="p-10 bg-red-900/50 text-white rounded-3xl">
+              <h3>Error: {err.message}</h3>
+              <pre className="text-[10px]">{JSON.stringify(props.gs, null, 2)}</pre>
+            </div>
+          );
+        }
+      }
+
+      function TabNegotiation({ gs, setGs, updateRemote }) {
+        try {
+          if (!gs) return null;
+          console.log("Render TabNegotiation, GS:", gs);
+          const pastPacts = Array.isArray(gs?.pacts) ? gs.pacts : Object.values(gs?.pacts || {});
+          const activeAgreements = Array.isArray(gs?.activeAgreements) ? gs.activeAgreements : Object.values(gs?.activeAgreements || {});
+
+          // Merge them for display
+          const allPacts = [...activeAgreements, ...pastPacts];
+          const players = gs?.players || [];
+
+          return (
+            <div className="animate-page space-y-8">
+              <div className="text-center space-y-2">
+                <h2 className="text-5xl font-extrabold tracking-tight uppercase">Libro de <span className="text-orange-500">Pactos</span></h2>
+                <p className="text-slate-500 font-medium">Registro histórico de compromisos, alianzas y prebendas legislativas.</p>
+              </div>
+
+              {allPacts.length === 0 ? (
+                <div className="glass rounded-[3rem] p-16 text-center space-y-6 opacity-60">
+                  <Icon name="shake" className="w-16 h-16 text-slate-700 mx-auto" />
+                  <p className="text-slate-500 uppercase text-sm font-black tracking-widest">No hay registros de pactos en esta administración</p>
+                </div>
+              ) : (
+                <div className="glass rounded-[2.5rem] overflow-hidden border border-white/10">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-white/5 text-slate-500 uppercase text-[12px] font-black tracking-widest">
+                        <th className="px-8 py-6">Promitente</th>
+                        <th className="px-8 py-6">Beneficiario</th>
+                        <th className="px-8 py-6">Compromiso</th>
+                        <th className="px-8 py-6 text-center">Estado</th>
+                        <th className="px-4 py-6 text-center">T. Pacto</th>
+                        <th className="px-4 py-6 text-right">T. Resol.</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-[14px]">
+                      {allPacts.map((pact, i) => (
+                        <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors group">
+                          <td className="px-8 py-6 font-bold text-white">
+                            <div className="flex items-center space-x-3">
+                              <div className="w-2 h-8 rounded-full" style={{ backgroundColor: gs.players?.[pact.promisorIdx]?.color || '#ccc' }}></div>
+                              <span>{pact.promisorName}</span>
+                            </div>
+                          </td>
+                          <td className="px-8 py-6 text-slate-300">
+                            <div className="flex items-center space-x-3">
+                              <Icon name="user" className="w-4 h-4 opacity-30" />
+                              <span>{pact.beneficiaryName}</span>
+                            </div>
+                          </td>
+                          <td className="px-8 py-6">
+                            <div className="space-y-1">
+                              <span className="text-blue-400 font-bold block">{pact.detail}</span>
+                              <span className="text-[10px] text-slate-500 uppercase font-black">Turno {pact.turnCreated}</span>
+                            </div>
+                          </td>
+                          <td className="px-8 py-6 text-center">
+                            <span className={`px-4 py-2 rounded-xl text-[12px] font-black uppercase tracking-widest border border-current bg-current/10 ${pact.status === 'Cumplido' ? 'text-emerald-400' :
+                              pact.status === 'Traición' ? 'text-red-500' :
+                                pact.status === 'Archivado' ? 'text-slate-400 opacity-70' :
+                                  'text-orange-400 animate-pulse'
+                              }`}>
+                              {pact.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-6 text-center font-mono text-slate-500">
+                            #{pact.turnCreated}
+                          </td>
+                          <td className="px-4 py-6 text-right font-mono text-slate-300">
+                            {pact.turnResolved ? `#${pact.turnResolved}` : '--'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        } catch (err) {
+          return (
+            <div className="p-10 bg-red-900/50 text-white rounded-3xl">
+              <h3>Error en Pactos: {err.message}</h3>
+              <pre className="text-[10px]">{JSON.stringify(gs, null, 2)}</pre>
+            </div>
+          );
+        }
+      }
+
+      function TabLogs({ gs }) {
+        const logs = gs?.logs || [];
+        return (
+          <div className="animate-page space-y-4 max-h-[750px] overflow-y-auto pr-6 custom-scrollbar">
+            {logs.map((l, i) => (
+              <div key={i} className="glass p-8 rounded-[2rem] border-l-8 border-blue-500/30 flex space-x-6 items-center bg-gradient-to-r from-blue-500/5 to-transparent group hover:border-blue-500 transition-all">
+                <div className="text-blue-500/20 font-mono text-4xl group-hover:text-blue-500/40 transition-colors">#{logs.length - i}</div>
+                <div className="space-y-2 flex-grow">
+                  <p className="text-slate-200 text-xl font-bold">{l}</p>
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] text-slate-600 uppercase font-bold tracking-widest">Publicado por la Secretaría General del Palacio</span>
+                    <span className="text-[10px] text-blue-500/50 font-mono">STAMP: {new Date().toLocaleTimeString()}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
+      );
   </script>
 </body>
 
