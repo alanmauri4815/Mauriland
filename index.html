@@ -7451,20 +7451,31 @@
 
       // --- Multiplayer Actions ---
       const nextSituation = () => {
-        if (!isHost || (gs && gs.curSit) || (gs && gs.isGameOver)) return;
+        console.log("Attempting nextSituation...");
+        if (!isHost) { console.warn("nextSituation: Not host"); return; }
+        if (gs && gs.curSit) { console.warn("nextSituation: Already has active situation"); return; }
+        if (gs && gs.isGameOver) { console.warn("nextSituation: Game Over active"); return; }
+
         const situations = EXTERNAL_DATA.SITUATIONS;
         if (!situations || situations.length === 0) return alert("No hay situaciones!");
 
         const s = situations[Math.floor(Math.random() * situations.length)];
         if (!s) return;
 
+        console.log("Selecting new situation:", s.id);
+
         setGs(prev => {
-          if (!prev) return prev;
+          if (!prev) { console.error("nextSituation: No active state"); return prev; }
           const players = prev.players || [];
-          if (players.length === 0) return prev;
+          // FORCE UPDATE even if players array looks empty (shouldn't be, but prevent silent lock)
+          // if (players.length === 0) return prev; 
+
           const currentOwnerIdx = typeof prev.ownerIdx === 'number' ? prev.ownerIdx : 0;
-          const safeOwnerIdx = currentOwnerIdx % players.length;
-          const order = Array.from({ length: players.length }).map((_, i) => (safeOwnerIdx + i) % players.length);
+          const safeOwnerIdx = players.length > 0 ? currentOwnerIdx % players.length : 0;
+          const order = players.length > 0
+            ? Array.from({ length: players.length }).map((_, i) => (safeOwnerIdx + i) % players.length)
+            : [];
+
           const updatedGs = {
             ...prev,
             curSit: s,
@@ -7477,8 +7488,8 @@
             isAiProcessing: false,
             logs: [`Nueva Situación: ${s.id}`, ...(prev.logs || [])]
           };
-          // Move updateRemote outside in a separate useEffect or timeout if needed, 
-          // but for now, we'll keep it here but ensure updatedGs is stable.
+
+          console.log("Updating GS with new situation:", updatedGs);
           setTimeout(() => updateRemote(updatedGs), 0);
           return updatedGs;
         });
