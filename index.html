@@ -7564,7 +7564,7 @@
           const isLastVoter = prev.currentVoterPos === voterQueue.length - 1;
           const updatedGs = {
             ...prev,
-            votes: { ...(prev.votes || {}), [voterIdx]: optIdx },
+            votes: { ...(prev.votes || {}), [String(voterIdx)]: optIdx },
             currentVoterPos: isLastVoter ? prev.currentVoterPos : prev.currentVoterPos + 1
           };
           updateRemote(updatedGs);
@@ -7613,14 +7613,19 @@
           }
 
           recommendations.push({
-            name: p.name || `Jugador ${i + 1}`,
+            playerName: p.name || `Jugador ${i + 1}`,
+            playerIdx: i,
             seats: p.seats || 0,
             recText: hasVoted ? (options[optIdx]?.text || `Opción ${optIdx + 1}`) : "Sin Voto",
             loyalty: p.loyalty || 0,
             disloyalty: Math.max(0, 100 - (p.loyalty || 0))
           });
 
-          voterDetails.push({ name: p.name || `Jugador ${i + 1}`, distribution });
+          voterDetails.push({
+            playerName: p.name || `Jugador ${i + 1}`,
+            playerIdx: i,
+            distribution
+          });
 
           distribution.forEach((count, idx) => {
             if (tally[idx] !== undefined) tally[idx] += count;
@@ -8584,13 +8589,13 @@
                       <div className="space-y-4">
                         <h3 className="text-sm font-black uppercase tracking-widest text-slate-500">Resumen de Recomendación</h3>
                         <div className="space-y-2">
-                          {(gs.lastResults?.recommendations || []).map((r, i) => (
+                          {(gs.lastResults?.ranking || []).map((r, i) => (
                             <div key={i} className={`p-4 rounded-2xl flex items-center justify-between ${i === 0 ? 'bg-blue-500/20 border border-blue-500/30' : 'bg-white/5 border border-white/10'}`}>
                               <div className="flex items-center space-x-3">
-                                <span className="text-lg font-bold">{r.optionText}</span>
+                                <span className="text-lg font-bold">{r.text}</span>
                               </div>
                               <div className="text-right">
-                                <span className="block font-black text-xl">{r.votes.total}</span>
+                                <span className="block font-black text-xl">{r.seats}</span>
                                 <span className="text-[10px] uppercase font-bold text-slate-500">Bancas</span>
                               </div>
                             </div>
