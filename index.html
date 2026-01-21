@@ -8054,7 +8054,7 @@
             </div>
             <div className="flex space-x-8 text-sm font-bold uppercase tracking-widest text-slate-400">
               {['players', 'dashboard', 'parliament', 'negotiation', 'logs'].map(t => {
-                const count = t === 'negotiation' ? (safeArray(gs?.pacts).length + safeArray(gs?.activeAgreements).length) : 0;
+                const count = t === 'negotiation' ? (safeArray(gs.pacts || []).length + safeArray(gs.activeAgreements || []).length) : 0;
                 return (
                   <button key={t} onClick={() => setTab(t)} className={`hover:text-white transition-all ${tab === t ? 'border-b-2 border-blue-500 pb-1 text-white' : ''}`}>
                     {t === 'players' ? 'Cámara' : t === 'dashboard' ? 'Nación' : t === 'parliament' ? 'Votos' : t === 'negotiation' ? `Pactos ${count > 0 ? `(${count})` : ''}` : 'Actas'}
@@ -8681,6 +8681,7 @@
                             <div className="flex-grow grid grid-cols-1 md:grid-cols-3 gap-2 w-full">
                               {/* Selector Opción */}
                               <select
+                                id={`action-${pIdx}`}
                                 className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm font-bold text-slate-300 focus:border-blue-500 outline-none"
                                 onChange={(e) => {
                                   const targetOptIdx = parseInt(e.target.value);
@@ -8755,16 +8756,23 @@
                                 setGs(prev => {
                                   const currentActive = safeArray(prev.activeAgreements);
                                   const currentLogs = safeArray(prev.logs);
+                                  const updatedActive = [...currentActive, newAgreement];
+                                  const updatedLogs = [`PACTO: ${p?.name || 'Actor'} y ${newAgreement.promisorName} firman: ${benefitText}`, ...currentLogs];
 
-                                  const nextGs = {
+                                  // Sincronización parcial ATÓMICA en Firebase
+                                  if (roomCode) {
+                                    const gsRef = db.ref(`rooms/${roomCode}/gs`);
+                                    gsRef.update({
+                                      activeAgreements: updatedActive,
+                                      logs: updatedLogs
+                                    }).catch(e => console.error("Error en sincronización parcial:", e));
+                                  }
+
+                                  return {
                                     ...prev,
-                                    activeAgreements: [...currentActive, newAgreement],
-                                    logs: [`PACTO: ${p?.name || 'Actor'} y ${newAgreement.promisorName} firman: ${benefitText}`, ...currentLogs]
+                                    activeAgreements: updatedActive,
+                                    logs: updatedLogs
                                   };
-
-                                  // Sincronización inmediata
-                                  setTimeout(() => updateRemote(nextGs), 100);
-                                  return nextGs;
                                 });
                                 alert("✅ Pacto formalizado con éxito. Revisa el Libro de Pactos.");
                               }}
@@ -8841,6 +8849,12 @@
         const pastPacts = safeArray(gs.pacts || []);
         const activeAgreements = safeArray(gs.activeAgreements || []);
         const allPacts = [...activeAgreements, ...pastPacts];
+
+        console.log("RENDER TAB PACTOS:", {
+          activeCount: activeAgreements.length,
+          pastCount: pastPacts.length,
+          allCount: allPacts.length
+        });
 
         return (
           <div className="animate-page space-y-8">
