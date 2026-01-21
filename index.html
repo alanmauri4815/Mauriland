@@ -7450,6 +7450,12 @@
         setPhase('setup');
       };
 
+      const safeArray = (val) => {
+        if (!val) return [];
+        if (Array.isArray(val)) return val.filter(Boolean);
+        return Object.values(val).filter(Boolean);
+      };
+
       const joinRoom = (code) => {
         const c = code.toUpperCase();
         db.ref(`rooms/${c}`).once('value', snapshot => {
@@ -7578,13 +7584,13 @@
 
       const finalizeVote = (chosenOptIdx = null, isDecree = false) => {
         if (!isHost || !gs || !gs.curSit) return;
-        const options = gs?.curSit?.options || [];
-        const players = gs?.players || [];
+        const options = safeArray(gs?.curSit?.options);
+        const players = safeArray(gs?.players);
         const totalSeats = players.length > 0 ? players.reduce((sum, p) => sum + (p?.seats || 0), 0) : 0;
 
         // Use negotiation switches if available, otherwise original votes
         const effectiveVotes = {};
-        players.forEach((_, i) => {
+        players.forEach((p, i) => {
           effectiveVotes[i] = gs?.negotiationSwitches?.[i] ?? gs?.votes?.[i];
         });
 
@@ -7745,8 +7751,7 @@
         });
 
         // 2. Pact Evaluation & Archiving
-        const rawActive = gs.activeAgreements || [];
-        const safeActive = Array.isArray(rawActive) ? rawActive : Object.values(rawActive);
+        const safeActive = safeArray(gs.activeAgreements);
         const currentPacts = [];
         const betrayedPacts = [];
 
@@ -7765,7 +7770,7 @@
           currentPacts.push({ ...a, status, turnResolved: gs.turn });
         });
 
-        const existingPacts = Array.isArray(gs.pacts) ? gs.pacts : Object.values(gs.pacts || {});
+        const existingPacts = safeArray(gs.pacts);
 
         // Merge results into newGs
         newGs = {
@@ -7782,7 +7787,7 @@
 
         if (winOpt) {
           const SECTOR_UNIT = 10;
-          const updatedSectors = (gs.sectors || []).map(s => {
+          const updatedSectors = safeArray(gs.sectors).map(s => {
             const impact = winOpt.sector?.[s.name] || 0;
             return { ...s, value: Math.max(0, Math.min(1000, (s.value || 500) + (impact * SECTOR_UNIT))) };
           });
@@ -8168,9 +8173,7 @@
             </div>
             <div className="flex space-x-8 text-sm font-bold uppercase tracking-widest text-slate-400">
               {['players', 'dashboard', 'parliament', 'negotiation', 'logs'].map(t => {
-                const pList = (Array.isArray(gs?.pacts) ? gs.pacts : Object.values(gs?.pacts || {})).filter(Boolean);
-                const aList = (Array.isArray(gs?.activeAgreements) ? gs.activeAgreements : Object.values(gs?.activeAgreements || {})).filter(Boolean);
-                const count = t === 'negotiation' ? pList.length + aList.length : 0;
+                const count = t === 'negotiation' ? (safeArray(gs?.pacts).length + safeArray(gs?.activeAgreements).length) : 0;
                 return (
                   <button key={t} onClick={() => setTab(t)} className={`hover:text-white transition-all ${tab === t ? 'border-b-2 border-blue-500 pb-1 text-white' : ''}`}>
                     {t === 'players' ? 'Cámara' : t === 'dashboard' ? 'Nación' : t === 'parliament' ? 'Votos' : t === 'negotiation' ? `Pactos ${count > 0 ? `(${count})` : ''}` : 'Actas'}
@@ -8445,7 +8448,8 @@
       // Safety check for gs presence
       if (!gs) return <div className="p-20 text-center opacity-50 uppercase font-black text-xs tracking-widest">Cargando Datos...</div>;
 
-      const owner = (gs?.players && gs?.players[gs?.ownerIdx % (gs?.players?.length || 1)]) || null;
+      const players = safeArray(gs?.players);
+      const owner = players[gs?.ownerIdx % (players.length || 1)] || null;
       // Recuperar la situación fresca de EXTERNAL_DATA para asegurar que la URL de la imagen esté actualizada
       // y no sea un dato obsoleto del localStorage
       const curSit = gs?.curSit ? (EXTERNAL_DATA.SITUATIONS.find(s => s.id === gs.curSit.id) || gs.curSit) : null;
@@ -8537,7 +8541,7 @@
             <div className="glass rounded-[2.5rem] p-8 space-y-6 flex flex-col h-full">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-widest">Sectores Sociales</h3>
               <div className="space-y-4 overflow-y-auto px-2 custom-scrollbar flex-grow">
-                {(gs?.sectors || []).map((s, i) => (
+                {safeArray(gs?.sectors).map((s, i) => (
                   <div key={i} className="space-y-1">
                     <div className="flex justify-between text-[13px] font-bold uppercase"><span>{s?.name}</span><span className={(s?.value || 0) > 500 ? "text-emerald-400" : "text-red-400"}>{s?.value}</span></div>
                     <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
@@ -8765,7 +8769,7 @@
                   <div className="space-y-4">
                     <h4 className="text-[13px] font-black uppercase tracking-widest text-slate-500 mb-2">Diputados Indecisos (Matriz de Compromisos)</h4>
                     <div className="grid gap-3">
-                      {(gs?.players || []).map((p, pIdx) => {
+                      {safeArray(gs?.players).map((p, pIdx) => {
                         const originalVote = safeVotes[String(pIdx)];
                         const currentVote = gs?.negotiationSwitches?.[pIdx] ?? originalVote;
                         const isTopOption = safeTopOptions.some(entry => entry && entry[0] && parseInt(entry[0]) == currentVote);
@@ -8813,7 +8817,7 @@
                               {/* Selector Objetivo (Persuador) */}
                               <select className="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm font-bold text-slate-300 focus:border-blue-500 outline-none" id={`target-${pIdx}`}>
                                 <option value="">Exigir compromiso a...</option>
-                                {(gs?.players || []).map((target, tIdx) => {
+                                {safeArray(gs?.players).map((target, tIdx) => {
                                   // Solo mostrar jugadores que apoyan la opción seleccionada actualmente por el perdedor
                                   const targetSupport = gs?.negotiationSwitches?.[tIdx] ?? gs?.votes?.[tIdx];
                                   if (currentVote !== undefined && targetSupport === currentVote && tIdx !== pIdx) {
@@ -8893,11 +8897,9 @@
                     </div>
                     <div className="flex space-x-4">
                       <button onClick={() => {
-                        const rawA = gs.activeAgreements || [];
-                        const activeAgreements = (Array.isArray(rawA) ? rawA : Object.values(rawA)).filter(Boolean);
+                        const activeAgreements = safeArray(gs.activeAgreements);
                         const archivedPacts = activeAgreements.map(a => ({ ...a, status: 'Archivado', turnResolved: gs.turn }));
-                        const rawP = gs.pacts || [];
-                        const existingPacts = (Array.isArray(rawP) ? rawP : Object.values(rawP)).filter(Boolean);
+                        const existingPacts = safeArray(gs.pacts);
 
                         const newGs = {
                           ...gs,
@@ -8905,7 +8907,7 @@
                           curSit: null,
                           pacts: [...existingPacts, ...archivedPacts].filter(Boolean),
                           activeAgreements: [],
-                          logs: ["Moción retirada y pactos archivados.", ...(Array.isArray(gs.logs) ? gs.logs : Object.values(gs.logs || {}))]
+                          logs: ["Moción retirada y pactos archivados.", ...safeArray(gs.logs)]
                         };
                         setGs(newGs);
                         updateRemote(newGs);
@@ -8944,17 +8946,19 @@
     function TabNegotiation({ gs, setGs, updateRemote }) {
       try {
         if (!gs) return null;
-        console.log("Render TabNegotiation, GS:", gs);
-        const rawPacts = gs?.pacts || [];
-        const pastPacts = (Array.isArray(rawPacts) ? rawPacts : Object.values(rawPacts)).filter(Boolean);
 
-        const rawActive = gs?.activeAgreements || [];
-        const activeAgreements = (Array.isArray(rawActive) ? rawActive : Object.values(rawActive)).filter(Boolean);
+        const safeArray = (val) => {
+          if (!val) return [];
+          if (Array.isArray(val)) return val.filter(Boolean);
+          return Object.values(val).filter(Boolean);
+        };
 
-        // Merge them for display
-        const allPacts = [...activeAgreements, ...pastPacts].filter(p => p && (p.promisorName || p.beneficiaryName || p.detail));
-        console.log("LIBRO DE PACTOS - Renderizando:", allPacts.length, "pactos encontrados:", allPacts);
-        const players = gs?.players || [];
+        const pastPacts = safeArray(gs?.pacts);
+        const activeAgreements = safeArray(gs?.activeAgreements);
+        const allPacts = [...activeAgreements, ...pastPacts];
+
+        console.log("LIBRO DE PACTOS - Render:", allPacts.length, allPacts);
+        const players = safeArray(gs?.players);
 
         return (
           <div className="animate-page space-y-8">
@@ -8966,7 +8970,8 @@
             {allPacts.length === 0 ? (
               <div className="glass rounded-[3rem] p-16 text-center space-y-6 opacity-60">
                 <Icon name="shake" className="w-16 h-16 text-slate-700 mx-auto" />
-                <p className="text-slate-500 uppercase text-sm font-black tracking-widest">No hay registros de pactos en esta administración ({allPacts.length})</p>
+                <p className="text-slate-500 uppercase text-sm font-black tracking-widest">No hay pactos registrados ({allPacts.length})</p>
+                <div className="text-[10px] text-slate-800">Debug: Active={activeAgreements.length} | Past={pastPacts.length}</div>
               </div>
             ) : (
               <div className="glass rounded-[2.5rem] overflow-hidden border border-white/10">
