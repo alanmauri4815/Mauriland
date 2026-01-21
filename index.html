@@ -107,6 +107,12 @@
 
     const { useState, useEffect, useMemo, useRef } = React;
 
+    const safeArray = (val) => {
+      if (!val) return [];
+      if (Array.isArray(val)) return val.filter(Boolean);
+      return Object.values(val).filter(Boolean);
+    };
+
     class ErrorBoundary extends React.Component {
       constructor(props) {
         super(props);
@@ -7216,12 +7222,6 @@
       firebase.initializeApp(firebaseConfig);
     }
     const db = firebase.database();
-
-    const safeArray = (val) => {
-      if (!val) return [];
-      if (Array.isArray(val)) return val.filter(Boolean);
-      return Object.values(val).filter(Boolean);
-    };
 
     function App() {
       const [phase, setPhase] = useState('lobby'); // lobby, setup, setup-details, assignment, playing
