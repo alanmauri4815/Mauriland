@@ -7340,6 +7340,7 @@
         };
 
         const safeGs = sanitize(newGs);
+        if (!safeGs) return; // Prevent corrupt updates
         const updateData = { gs: safeGs };
 
         if (newPhase) updateData.phase = newPhase;
@@ -7593,371 +7594,260 @@
       };
 
       const finalizeVote = (chosenOptIdx = null, isDecree = false) => {
-        if (!isHost || !gs || !gs.curSit) return;
-        const options = safeArray(gs?.curSit?.options);
-        const players = safeArray(gs?.players);
-        const totalSeats = players.length > 0 ? players.reduce((sum, p) => sum + (p?.seats || 0), 0) : 0;
+        if (!isHost) return;
 
-        // Use negotiation switches if available, otherwise original votes
-        const effectiveVotes = {};
-        players.forEach((p, i) => {
-          const sw = gs?.negotiationSwitches;
-          const vt = gs?.votes;
-          const val = (sw && sw[i] !== undefined) ? sw[i] : (sw && sw[String(i)] !== undefined ? sw[String(i)] : (vt && vt[i] !== undefined ? vt[i] : (vt ? vt[String(i)] : undefined)));
-          effectiveVotes[i] = val;
-        });
+        setGs(prev => {
+          if (!prev || !prev.curSit) return prev;
 
-        const tally = options.map(() => 0);
-        const recommendations = [];
-        const voterDetails = [];
+          const options = safeArray(prev.curSit?.options);
+          const players = safeArray(prev.players);
+          if (players.length === 0) return prev;
 
-        players.forEach((p, i) => {
-          if (!p) return;
-          const optIdx = effectiveVotes[i] !== undefined ? effectiveVotes[i] : effectiveVotes[String(i)];
-          const hasVoted = optIdx !== undefined && optIdx !== null;
+          const totalSeats = players.reduce((sum, p) => sum + (p?.seats || 0), 0);
 
-          const loyalCount = Math.floor((p.seats || 0) * ((p.loyalty || 0) / 100));
-          const rebelCount = (p.seats || 0) - loyalCount;
-          const distribution = options.map(() => 0);
+          const effectiveVotes = {};
+          players.forEach((p, i) => {
+            const sw = prev.negotiationSwitches;
+            const vt = prev.votes || {};
+            const val = (sw && sw[i] !== undefined) ? sw[i] : (sw && sw[String(i)] !== undefined ? sw[String(i)] : (vt[i] !== undefined ? vt[i] : (vt[String(i)] !== undefined ? vt[String(i)] : undefined)));
+            effectiveVotes[i] = val;
+          });
 
-          if (hasVoted && options.length > 0) {
-            distribution[optIdx] += loyalCount;
-            // Distribute rebels randomly
-            for (let r = 0; r < rebelCount; r++) {
-              const randIdx = Math.floor(Math.random() * options.length);
-              distribution[randIdx]++;
+          const tally = options.map(() => 0);
+          const ranking = [];
+          const recommendations = [];
+          const voterDetails = [];
+
+          players.forEach((p, i) => {
+            if (!p) return;
+            const optIdx = effectiveVotes[i] !== undefined ? effectiveVotes[i] : effectiveVotes[String(i)];
+            const hasVoted = optIdx !== undefined && optIdx !== null;
+            const loyalCount = Math.floor((p.seats || 0) * ((p.loyalty || 0) / 100));
+            const rebelCount = (p.seats || 0) - loyalCount;
+            const distribution = options.map(() => 0);
+
+            if (hasVoted && options.length > 0) {
+              distribution[optIdx] += loyalCount;
+              for (let r = 0; r < rebelCount; r++) {
+                const randIdx = Math.floor(Math.random() * options.length);
+                distribution[randIdx]++;
+              }
+            } else if (options.length > 0) {
+              for (let r = 0; r < (p.seats || 0); r++) {
+                const randIdx = Math.floor(Math.random() * options.length);
+                distribution[randIdx]++;
+              }
             }
-          } else if (options.length > 0) {
-            // No vote: all seats distributed randomly
-            for (let r = 0; r < (p.seats || 0); r++) {
-              const randIdx = Math.floor(Math.random() * options.length);
-              distribution[randIdx]++;
-            }
-          }
 
-          recommendations.push({
-            playerName: p.name || `Jugador ${i + 1}`,
-            playerIdx: i,
-            seats: p.seats || 0,
-            recText: hasVoted ? (options[optIdx]?.text || `Opción ${optIdx + 1}`) : "Sin Voto",
-            loyalty: p.loyalty || 0,
-            disloyalty: Math.max(0, 100 - (p.loyalty || 0))
+            distribution.forEach((v, idx) => { tally[idx] += v; });
+            voterDetails.push({ name: p.name, party: p.party, distribution, mainOpt: hasVoted ? options[optIdx].text : 'Abstención' });
           });
 
-          voterDetails.push({
-            playerName: p.name || `Jugador ${i + 1}`,
-            playerIdx: i,
-            distribution
+          options.forEach((opt, idx) => {
+            ranking.push({ optIdx: idx, text: opt.text, seats: tally[idx] });
           });
+          ranking.sort((a, b) => b.seats - a.seats);
 
-          distribution.forEach((count, idx) => {
-            if (tally[idx] !== undefined) tally[idx] += count;
-          });
-        });
+          const threshold = Math.ceil(totalSeats * 0.4);
+          let needsNegotiation = false;
+          let finalOptIdx = chosenOptIdx;
 
-        const ranking = options.map((o, i) => ({ optIdx: i, text: o.text, seats: tally[i] }))
-          .sort((a, b) => b.seats - a.seats);
+          if (!isDecree) {
+            const topSeats = ranking[0]?.seats || 0;
+            const isTie = ranking.length > 1 && ranking[0].seats === ranking[1].seats;
+            const tiedOptions = ranking.filter(r => r.seats === topSeats && topSeats > 0).map(r => r.optIdx);
 
-        let finalOptIdx = chosenOptIdx;
-        let needsNegotiation = false;
-
-        if (!isDecree) {
-          const threshold = totalSeats * 0.4;
-          const topSeats = ranking[0]?.seats || 0;
-          const tiedOptions = ranking.filter(r => r.seats === topSeats && topSeats > 0).map(r => r.optIdx);
-          const isTie = tiedOptions.length > 1;
-
-          if (topSeats >= threshold && !isTie) {
-            finalOptIdx = ranking[0].optIdx;
-          } else if (isTie && topSeats >= threshold && topSeats > 0) {
-            // Voto de Calidad del Presidente (Owner)
-            const ownerVote = effectiveVotes[gs?.ownerIdx] !== undefined ? effectiveVotes[gs?.ownerIdx] : effectiveVotes[String(gs?.ownerIdx)];
-            // Si el voto del dueño está entre los empatados en el top, desempata a su favor
-            if (ownerVote !== undefined && ownerVote !== null && tiedOptions.includes(Number(ownerVote))) {
-              finalOptIdx = Number(ownerVote);
+            if (topSeats >= threshold && !isTie) {
+              finalOptIdx = ranking[0].optIdx;
+            } else if (isTie && topSeats >= threshold && topSeats > 0) {
+              const ownerIdx = prev.ownerIdx;
+              const ownerVote = effectiveVotes[ownerIdx] !== undefined ? effectiveVotes[ownerIdx] : effectiveVotes[String(ownerIdx)];
+              if (ownerVote !== undefined && ownerVote !== null && tiedOptions.includes(Number(ownerVote))) {
+                finalOptIdx = Number(ownerVote);
+              } else {
+                needsNegotiation = true;
+              }
             } else {
-              needsNegotiation = true; // Empate sin apoyo del presidente -> Negociación
+              needsNegotiation = true;
             }
-          } else {
-            needsNegotiation = true;
           }
-        }
 
-        if (needsNegotiation) {
-          const negGs = {
-            ...gs,
+          if (needsNegotiation) {
+            const negGs = {
+              ...prev,
+              showResults: true,
+              lastResults: { needsNegotiation: true, recommendations, voterDetails, ranking },
+              topOptions: ranking.slice(0, 2).map(r => [r.optIdx.toString(), r.seats]),
+              isAiProcessing: false,
+              negotiating: true
+            };
+            updateRemote(negGs);
+            return negGs;
+          }
+
+          const winIdx = isDecree ? chosenOptIdx : finalOptIdx;
+          const winOpt = (winIdx !== null && winIdx !== undefined) ? options[winIdx] : null;
+          const currentLogs = safeArray(prev.logs);
+          const logs = [isDecree ? `Decreto: ${winOpt?.text || "Desconocido"}` : (winOpt ? `Aprobado: ${winOpt.text}` : "Moción Archivada"), ...currentLogs];
+
+          const lastResults = {
+            winner: winOpt?.text || "Ley Archivada",
+            winnerIdx: (winIdx ?? 0) + 1,
+            isDecree,
+            percent: totalSeats > 0 ? Math.round(((tally[winIdx] || 0) / totalSeats) * 100) : 0,
+            recommendations, voterDetails, ranking
+          };
+
+          const updatedPlayers = players.map((p, i) => {
+            const pImpact = winOpt?.party?.[p.party] || 0;
+            const newAp = Math.max(0, Math.min(100, (p.ap || 50) + pImpact));
+            const myVoteIdx = effectiveVotes[i] !== undefined ? effectiveVotes[i] : effectiveVotes[String(i)];
+            const myVoteImpact = (winOpt && myVoteIdx !== undefined) ? (options[myVoteIdx]?.party?.[p.party] || 0) : 0;
+            const bestPossibleImpact = winOpt ? Math.max(...options.map(o => o.party?.[p.party] || 0)) : 0;
+            let loyaltyChange = 0;
+            if (myVoteIdx === undefined || myVoteIdx === null) { loyaltyChange = -5; }
+            else if (winOpt) {
+              if (myVoteImpact >= bestPossibleImpact && bestPossibleImpact > 0) loyaltyChange = 4;
+              else if (myVoteImpact > 0) loyaltyChange = 2;
+              else if (myVoteImpact < 0) loyaltyChange = -8;
+              else loyaltyChange = -1;
+            }
+            return { ...p, ap: newAp, loyalty: Math.max(0, Math.min(100, (p.loyalty || 70) + loyaltyChange)) };
+          });
+
+          const safeActive = safeArray(prev.activeAgreements);
+          const currentPacts = [];
+          const betrayedPacts = [];
+          safeActive.forEach(a => {
+            if (!a) return;
+            const promisorVote = effectiveVotes[a.promisorIdx] !== undefined ? effectiveVotes[a.promisorIdx] : effectiveVotes[String(a.promisorIdx)];
+            const promisedOpt = (prev.negotiationSwitches && prev.negotiationSwitches[a.promisorIdx] !== undefined) ? prev.negotiationSwitches[a.promisorIdx] : (prev.negotiationSwitches ? prev.negotiationSwitches[String(a.promisorIdx)] : undefined);
+            let status = 'Cumplido';
+            if (promisedOpt !== undefined && promisorVote != promisedOpt) {
+              status = 'Traicionado';
+              betrayedPacts.push(a);
+            } else if (!winOpt) {
+              status = 'Archivado';
+            }
+            currentPacts.push({ ...a, status, turnResolved: prev.turn });
+          });
+
+          let nextGs = {
+            ...prev,
             showResults: true,
-            lastResults: {
-              needsNegotiation: true,
-              recommendations,
-              voterDetails,
-              ranking
-            },
-            topOptions: ranking.slice(0, 2).map(r => [r.optIdx.toString(), r.seats]),
-            isAiProcessing: false
+            lastResults,
+            negotiating: false,
+            attemptedNegotiation: prev.negotiating,
+            players: updatedPlayers,
+            pacts: [...safeArray(prev.pacts), ...currentPacts].filter(Boolean),
+            activeAgreements: [],
+            logs: [...logs, ...betrayedPacts.map(p => `TRAICIÓN: ${p.promisorName} rompió su pacto con ${p.beneficiaryName}.`), ...(winOpt ? [] : ["La ley ha sido archivada por falta de consenso."])]
           };
-          setGs(negGs);
-          updateRemote(negGs);
-          return;
-        }
 
-        const winIdx = isDecree ? chosenOptIdx : finalOptIdx;
-        const winOpt = (winIdx !== null && winIdx !== undefined) ? options[winIdx] : null;
-        const currentLogs = safeArray(gs?.logs);
-        const logs = [isDecree ? `Decreto: ${winOpt?.text || "Desconocido"}` : `Aprobado: ${winOpt?.text || "Desconocido"}`, ...currentLogs];
+          if (winOpt) {
+            const updatedSectors = safeArray(prev.sectors).map(s => {
+              const impact = winOpt.sector?.[s.name] || 0;
+              return { ...s, value: Math.max(0, Math.min(1000, (s.value || 500) + (impact * 10))) };
+            });
+            const totalDev = updatedSectors.reduce((acc, s) => acc + Math.abs(s.value - 500), 0);
+            nextGs.sectors = updatedSectors;
+            nextGs.tension = (totalDev / (updatedSectors.length * 500)) * 100;
+            nextGs.media = Math.min(10, Math.max(0, (prev.media || 5) + (lastResults.percent / 20) - 2));
+            nextGs.budget = prev.budget - (winOpt.cost || 0);
 
-        const lastResults = {
-          winner: winOpt?.text || "Ley Archivada",
-          winnerIdx: (winIdx ?? 0) + 1,
-          isDecree,
-          percent: Math.round(((tally[winIdx] || 0) / totalSeats) * 100),
-          recommendations,
-          voterDetails,
-          ranking
-        };
-
-        let newGs = {
-          ...gs,
-          showResults: true,
-          lastResults,
-          negotiating: false,
-          attemptedNegotiation: gs.negotiating
-        };
-
-        // 1. Calculate Party Alignment & Loyalty Updates (Safe for winOpt = null)
-        const updatedPlayers = (gs.players || []).map((p, i) => {
-          const pImpact = winOpt?.party?.[p.party] || 0;
-          const newAp = Math.max(0, Math.min(100, (p.ap || 50) + pImpact));
-
-          const myVoteIdx = effectiveVotes[i] !== undefined ? effectiveVotes[i] : effectiveVotes[String(i)];
-          const myVoteImpact = (winOpt && myVoteIdx !== undefined) ? (options[myVoteIdx]?.party?.[p.party] || 0) : 0;
-          const bestPossibleImpact = winOpt ? Math.max(...options.map(o => o.party?.[p.party] || 0)) : 0;
-
-          let loyaltyChange = 0;
-          if (myVoteIdx === undefined || myVoteIdx === null) {
-            loyaltyChange = -5; // Did not vote
-          } else if (winOpt) {
-            if (myVoteImpact >= bestPossibleImpact && bestPossibleImpact > 0) {
-              loyaltyChange = 4;
-            } else if (myVoteImpact > 0) {
-              loyaltyChange = 2;
-            } else if (myVoteImpact < 0) {
-              loyaltyChange = -8;
-            } else {
-              loyaltyChange = -1;
-            }
+            let finalPlayers = [...nextGs.players];
+            betrayedPacts.forEach(p => {
+              if (finalPlayers[p.promisorIdx] && finalPlayers[p.promisorIdx].seats > 5) {
+                finalPlayers[p.promisorIdx] = { ...finalPlayers[p.promisorIdx], seats: finalPlayers[p.promisorIdx].seats - 5 };
+                if (finalPlayers[p.beneficiaryIdx]) {
+                  finalPlayers[p.beneficiaryIdx] = { ...finalPlayers[p.beneficiaryIdx], seats: finalPlayers[p.beneficiaryIdx].seats + 5 };
+                }
+              }
+            });
+            nextGs.players = finalPlayers;
+            if (winOpt.isBankruptcy) { nextGs.isGameOver = true; nextGs.gameOverReason = "Bancarrota Estatal"; }
           }
 
-          // OP update for turn owner
-          const weightedImpact = winOpt ? (gs.sectors || []).reduce((acc, s) => {
-            const effect = winOpt.sector?.[s.name] || 0;
-            return acc + (effect * (s.weight || 1));
-          }, 0) : 0;
-          const newOp = (i === gs.ownerIdx) ? Math.max(0, Math.min(100, (p.op || 50) + (weightedImpact * 0.5))) : (p.op || 50);
+          if (nextGs.budget < 0 && !nextGs.hasRequestedRescue && !prev.curSit?.isRescue) { nextGs.pendingRescueTrigger = true; }
+          if (nextGs.tension > 90) { nextGs.isGameOver = true; nextGs.gameOverReason = "Estallido Social"; }
+          if (nextGs.media < 1) { nextGs.isGameOver = true; nextGs.gameOverReason = "Golpe de Estado"; }
+          if (nextGs.turn >= 12 && !nextGs.isGameOver) { nextGs.isGameOver = true; nextGs.gameOverReason = "Fin de Legislatura"; }
 
-          return {
-            ...p,
-            ap: newAp,
-            op: newOp,
-            loyalty: Math.max(0, Math.min(100, (p.loyalty || 70) + loyaltyChange))
-          };
+          nextGs.isAiProcessing = false;
+          updateRemote(nextGs);
+          return nextGs;
         });
-
-        // 2. Pact Evaluation & Archiving
-        const safeActive = safeArray(gs.activeAgreements);
-        const currentPacts = [];
-        const betrayedPacts = [];
-
-        safeActive.forEach(a => {
-          if (!a) return;
-          const promisorVote = effectiveVotes[a.promisorIdx] !== undefined ? effectiveVotes[a.promisorIdx] : effectiveVotes[String(a.promisorIdx)];
-          const promisedOpt = (gs.negotiationSwitches && gs.negotiationSwitches[a.promisorIdx] !== undefined) ? gs.negotiationSwitches[a.promisorIdx] : (gs.negotiationSwitches ? gs.negotiationSwitches[String(a.promisorIdx)] : undefined);
-          let status = 'Cumplido';
-
-          if (promisedOpt !== undefined && promisorVote != promisedOpt) {
-            status = 'Traicionado';
-            betrayedPacts.push(a);
-          } else if (!winOpt) {
-            status = 'Archivado';
-          }
-          currentPacts.push({ ...a, status, turnResolved: gs.turn });
-        });
-
-        const existingPacts = safeArray(gs.pacts);
-
-        // Merge results into newGs
-        newGs = {
-          ...newGs,
-          players: updatedPlayers,
-          pacts: [...existingPacts, ...currentPacts].filter(Boolean),
-          activeAgreements: [],
-          logs: [
-            ...logs,
-            ...betrayedPacts.map(p => `TRAICIÓN: ${p.promisorName} rompió su pacto con ${p.beneficiaryName}.`),
-            ...(winOpt ? [] : ["La ley ha sido archivada por falta de consenso."])
-          ]
-        };
-
-        if (winOpt) {
-          const SECTOR_UNIT = 10;
-          const updatedSectors = safeArray(gs.sectors).map(s => {
-            const impact = winOpt.sector?.[s.name] || 0;
-            return { ...s, value: Math.max(0, Math.min(1000, (s.value || 500) + (impact * SECTOR_UNIT))) };
-          });
-
-          const totalDev = updatedSectors.reduce((acc, s) => acc + Math.abs(s.value - 500), 0);
-          const newTension = (totalDev / (updatedSectors.length * 500)) * 100;
-          const newMedia = Math.min(10, Math.max(0, (gs.media || 5) + (lastResults.percent / 20) - 2));
-
-          // Apply Betrayal Penalties (immediate seat transfer)
-          let finalPlayers = newGs.players.map(p => ({ ...p }));
-          betrayedPacts.forEach(p => {
-            if (finalPlayers[p.promisorIdx] && finalPlayers[p.promisorIdx].seats > 5) {
-              finalPlayers[p.promisorIdx].seats -= 5;
-              if (finalPlayers[p.beneficiaryIdx]) finalPlayers[p.beneficiaryIdx].seats += 5;
-            }
-          });
-
-          let newBudget = gs.budget - (winOpt.cost || 0);
-          let hasRescue = false;
-          let isGameOver = false;
-          let reason = "";
-
-          if (winOpt.isBankruptcy) {
-            isGameOver = true;
-            reason = "Bancarrota Pública: El gobierno ha colapsado.";
-          } else if (newBudget < 0 && !gs.hasRequestedRescue && !gs.curSit?.isRescue) {
-            hasRescue = true;
-          } else if (newBudget < 0 && gs.hasRequestedRescue) {
-            isGameOver = true;
-            reason = "Quiebra Terminal: El país es insolvente.";
-          }
-
-          newGs = {
-            ...newGs,
-            budget: newBudget,
-            sectors: updatedSectors,
-            players: finalPlayers,
-            tension: newTension,
-            media: newMedia,
-            isGameOver: isGameOver || newGs.isGameOver,
-            gameOverReason: reason || newGs.gameOverReason,
-            pendingRescueTrigger: hasRescue,
-            hasRequestedRescue: gs.hasRequestedRescue || winOpt.isRescue,
-            isAiProcessing: false
-          };
-        } else {
-          // Alignment already updated in newGs.players above
-          newGs.isAiProcessing = false;
-        }
-
-        // Check overall Game Over
-        if (newGs.budget <= 0) {
-          newGs.isGameOver = true;
-          newGs.gameOverReason = "Bancarrota Nacional: Fondos agotados.";
-        } else if (gs.turn >= 12 && !isDecree) {
-          newGs.isGameOver = true;
-          newGs.gameOverReason = "Fin de Legislatura.";
-        }
-
-        setGs(newGs);
-        updateRemote(newGs);
       };
 
       const closeResults = () => {
-        if (!isHost || !gs) return;
-        const players = gs.players || [];
-        const nextOwnerIdx = (gs.ownerIdx + 1) % (players.length || 1);
-        let updatedPlayers = [...players];
-        let logs = [...(gs.logs || [])];
-        let isEndOfRound = nextOwnerIdx === 0;
-        let electionData = null;
-        let isGameOver = gs.isGameOver;
-        let gameOverReason = gs.gameOverReason;
-        let nextSit = null;
+        if (!isHost) return;
+        setGs(prev => {
+          if (!prev) return prev;
+          const players = prev.players || [];
+          const nextOwnerIdx = (prev.ownerIdx + 1) % (players.length || 1);
+          let updatedPlayers = [...players];
+          let logs = safeArray(prev.logs);
+          let isEndOfRound = nextOwnerIdx === 0;
+          let isGameOver = prev.isGameOver;
+          let nextSit = null;
 
-        // --- Check Rescue Situation ---
-        if (gs.pendingRescueTrigger) {
-          nextSit = EXTERNAL_DATA.RESCUE_SITUATION;
-          logs.unshift("ALERTA: Crisis de Deuda. El Fondo Internacional ha intervenido.");
-        }
-
-        // --- Check End of Legislature ---
-        if (gs.turn >= 12 && !gs.pendingRescueTrigger) {
-          isGameOver = true;
-          gameOverReason = "Legislatura Cumplida: Se ha completado el periodo constitucional de 12 turnos.";
-        }
-
-        // --- End of Round: Election Recount ---
-        if (isEndOfRound && !isGameOver && !gs.pendingRescueTrigger) {
-          logs.unshift("--- Fin de Ronda: Recuento Electoral ---");
-          const totalSeats = updatedPlayers.length * 20;
-          const totalOP = updatedPlayers.reduce((sum, pl) => sum + Math.max(0, pl.op || 50), 0);
-
-          if (totalOP > 0) {
-            let assignedSeats = 0;
-            const fractions = [];
-            updatedPlayers = updatedPlayers.map((pl, idx) => {
-              const exact = (Math.max(0, pl.op || 50) / totalOP) * totalSeats;
-              const whole = Math.floor(exact);
-              fractions.push({ idx, frac: exact - whole });
-              assignedSeats += whole;
-              return { ...pl, oldSeats: pl.seats, seats: whole };
-            });
-            const remaining = totalSeats - assignedSeats;
-            fractions.sort((a, b) => b.frac - a.frac);
-            for (let i = 0; i < remaining; i++) {
-              updatedPlayers[fractions[i].idx].seats += 1;
-            }
-            updatedPlayers.forEach(pl => {
-              if (pl.seats !== pl.oldSeats) {
-                logs.unshift(`${pl.party}: ${pl.oldSeats} ➔ ${pl.seats} bancas`);
-              }
-            });
+          if (prev.pendingRescueTrigger) {
+            nextSit = EXTERNAL_DATA.RESCUE_SITUATION;
+            logs.unshift("ALERTA: Crisis de Deuda Internacional.");
           }
 
-          // Adjust Loyalty based on AP
-          updatedPlayers = updatedPlayers.map(pl => {
-            const oldLoyalty = pl.loyalty || 70;
-            const delta = ((pl.ap || 50) - 50) / 2; // In V3 it was (ap - 100) / 2 where ap was 0-1000, so (ap/10 - 50)/2
-            const newLoyalty = Math.max(40, Math.min(100, 70 + delta));
-            if (Math.round(newLoyalty) !== Math.round(oldLoyalty)) {
-              logs.unshift(`${pl.name}: Lealtad ajustada a ${Math.round(newLoyalty)}%`);
+          if (isEndOfRound && !isGameOver && !prev.pendingRescueTrigger) {
+            // Reducción electoral logic...
+            const totalSeats = updatedPlayers.length * 20;
+            const totalOP = updatedPlayers.reduce((sum, pl) => sum + Math.max(0, pl.op || 50), 0);
+            if (totalOP > 0) {
+              let assignedSeats = 0;
+              const fractions = [];
+              updatedPlayers = updatedPlayers.map((pl, idx) => {
+                const exact = (Math.max(0, pl.op || 50) / totalOP) * totalSeats;
+                const whole = Math.floor(exact);
+                fractions.push({ idx, frac: exact - whole });
+                assignedSeats += whole;
+                return { ...pl, oldSeats: pl.seats, seats: whole };
+              });
+              const remaining = totalSeats - assignedSeats;
+              fractions.sort((a, b) => b.frac - a.frac);
+              for (let i = 0; i < remaining; i++) updatedPlayers[fractions[i].idx].seats += 1;
             }
-            return { ...pl, loyalty: newLoyalty };
-          });
+          }
 
-          electionData = updatedPlayers.map(pl => ({
-            name: pl.name, party: pl.party, op: pl.op, ap: pl.ap,
-            oldSeats: pl.oldSeats, newSeats: pl.seats,
-            loyalty: pl.loyalty, color: pl.color
-          }));
-        }
-
-        const newGs = {
-          ...gs,
-          showResults: false,
-          showElection: isEndOfRound && !isGameOver && !gs.pendingRescueTrigger,
-          electionData,
-          curSit: nextSit,
-          votes: {},
-          negotiationSwitches: {},
-          lastResults: null,
-          ownerIdx: nextOwnerIdx || 0,
-          turn: (isGameOver ? gs.turn : (gs.turn || 1) + 1) || 2,
-          players: updatedPlayers,
-          logs,
-          isGameOver,
-          gameOverReason,
-          pendingRescueTrigger: false,
-          voterQueue: [], // Se regenera en nextSituation
-          currentVoterPos: 0,
-          isAiProcessing: false
-        };
-        setGs(newGs);
-        updateRemote(newGs);
-        setTab('dashboard');
+          const nextGs = {
+            ...prev,
+            showResults: false,
+            showElection: isEndOfRound && !isGameOver && !prev.pendingRescueTrigger,
+            curSit: nextSit,
+            votes: {},
+            negotiationSwitches: {},
+            lastResults: null,
+            ownerIdx: nextOwnerIdx,
+            turn: (isGameOver ? prev.turn : (prev.turn || 1) + 1),
+            players: updatedPlayers,
+            logs,
+            pendingRescueTrigger: false
+          };
+          updateRemote(nextGs);
+          return nextGs;
+        });
       };
+
+      const sanitize = (obj) => {
+        if (obj === null || obj === undefined) return null;
+        if (typeof obj !== 'object') return obj;
+        if (Array.isArray(obj)) return obj.map(sanitize);
+        const newObj = {};
+        for (const key in obj) {
+          if (Object.prototype.hasOwnProperty.call(obj, key) && obj[key] !== undefined) {
+            newObj[key] = sanitize(obj[key]);
+          }
+        }
+        return newObj;
+      };
+
       useEffect(() => {
         if (!isHost || phase !== 'playing' || !gs?.curSit || gs?.isAiProcessing) return;
         const voterQueue = gs?.voterQueue || [];
@@ -7965,30 +7855,17 @@
         const players = gs?.players || [];
         const owner = players[gs?.ownerIdx || 0] || null;
 
-        // --- 1. Fase de Votación Parlamentaria (IA) ---
         if (!gs?.negotiating && !gs?.showResults) {
-          // Debug AI Logic
-          if (voterIdx !== undefined) {
-            // console.log(`Checking AI Vote: Pos=${gs.currentVoterPos}, VoterIdx=${voterIdx}, IsAI=${players[voterIdx]?.isAI}, HasVoted=${(gs?.votes || {})[voterIdx] !== undefined}, Processing=${gs.isAiProcessing}`);
-          }
-
           if (voterIdx !== undefined && players[voterIdx] && players[voterIdx]?.isAI && (gs?.votes || {})[voterIdx] === undefined) {
-            console.log(`AI TRIC: ${players[voterIdx].name} (Idx ${voterIdx}) starting vote process...`);
             setGs(p => ({ ...p, isAiProcessing: true }));
             setTimeout(() => {
               setGs(prev => {
-                const capturedPos = gs?.currentVoterPos || 0;
                 const currentVoterIdx = prev?.voterQueue?.[prev.currentVoterPos];
-
-                // Safety check: only proceed if it's still THIS AI's turn
                 if (currentVoterIdx !== voterIdx || prev.votes?.[String(voterIdx)] !== undefined) {
                   return { ...prev, isAiProcessing: false };
                 }
-
                 const optIdx = calculateBestOptionAI(voterIdx, prev.curSit, prev);
                 const isLast = prev.currentVoterPos === (prev?.voterQueue?.length || 1) - 1;
-                console.log(`AI ACTION: ${players[voterIdx].name} voted Option ${optIdx + 1}. Moving Pos ${prev.currentVoterPos} -> ${isLast ? prev.currentVoterPos : prev.currentVoterPos + 1}`);
-
                 const newGs = {
                   ...prev,
                   votes: { ...(prev.votes || {}), [String(voterIdx)]: optIdx },
@@ -8003,7 +7880,6 @@
           }
         }
 
-        // --- 2. Fase de Negociación (IA) ---
         if (gs?.negotiating) {
           const indecisosIA = players.map((p, i) => ({ p, i }))
             .filter(({ p, i }) => p?.isAI && gs?.topOptions && !gs?.topOptions?.some(([idx]) => parseInt(idx) === (gs?.votes?.[i] ?? -1)) && (gs?.negotiationSwitches || {})[i] === undefined);
@@ -8011,18 +7887,15 @@
           if (indecisosIA.length > 0) {
             const nextIA = indecisosIA[0];
             setGs(p => ({ ...p, isAiProcessing: true }));
-
             setTimeout(() => {
               setGs(prev => {
                 const winnerOpts = (prev.topOptions || []).map(([idx]) => parseInt(idx));
                 let bestSwitchIdx = winnerOpts[0];
                 let maxScore = -999;
-
                 winnerOpts.forEach(oIdx => {
                   const score = prev.curSit.options[oIdx]?.party?.[nextIA.p.party] || 0;
                   if (score > maxScore) { maxScore = score; bestSwitchIdx = oIdx; }
                 });
-
                 const newGs = {
                   ...prev,
                   negotiationSwitches: { ...(prev?.negotiationSwitches || {}), [nextIA.i]: bestSwitchIdx },
@@ -8034,15 +7907,11 @@
               });
             }, 1500);
           } else if (owner?.isAI && !gs?.isAiProcessing && !players.some(p => p.isHuman || p.id === playerId)) {
-            // Robust check: only auto-finalize if NO humans (or current human player) are in game.
             setGs(p => ({ ...p, isAiProcessing: true }));
-            setTimeout(() => {
-              finalizeVote();
-            }, 2000);
+            setTimeout(() => finalizeVote(), 2000);
           }
         }
 
-        // --- 3. Fase de Decreto Presidencial (IA) ---
         if (gs.showResults && gs.lastResults?.needsNegotiation && gs.attemptedNegotiation && owner?.isAI && !players.some(p => p.isHuman || p.id === playerId)) {
           if (gs.isAiProcessing) return;
           setGs(p => ({ ...p, isAiProcessing: true }));
@@ -8057,7 +7926,6 @@
             finalizeVote(bestIdx, true);
           }, 2000);
         }
-
       }, [isHost, gs?.currentVoterPos, gs?.curSit, gs?.negotiating, gs?.showResults, phase, gs?.isAiProcessing, gs?.players, playerId]);
 
       if (phase === 'lobby') {
@@ -8868,6 +8736,7 @@
                                 const benefitText = benefitSelect.options[benefitSelect.selectedIndex].text;
 
                                 const newAgreement = {
+                                  id: Math.random().toString(36).substr(2, 9),
                                   promisorIdx: targetIdx,
                                   promisorName: (gs.players && gs.players[targetIdx]) ? gs.players[targetIdx].name : `Actor ${targetIdx}`,
                                   beneficiaryIdx: pIdx,
@@ -8879,19 +8748,19 @@
                                   turnResolved: null
                                 };
 
-                                const safeActive = safeArray(gs.activeAgreements);
-                                const safeLogs = safeArray(gs.logs);
-
-                                const newGs = {
-                                  ...gs,
-                                  activeAgreements: [...safeActive, newAgreement],
-                                  logs: [`PACTO: ${p?.name || 'Actor'} y ${(gs.players && gs.players[targetIdx]) ? gs.players[targetIdx].name : 'Actor'} firman: ${benefitText}`, ...safeLogs]
-                                };
-
-                                console.log("Creating Pact:", newAgreement);
-                                setGs(newGs);
-                                updateRemote(newGs);
-                                alert("Pacto registrado y sincronizado en el Libro.");
+                                setGs(prev => {
+                                  const safeActive = safeArray(prev.activeAgreements);
+                                  const safeLogs = safeArray(prev.logs);
+                                  const nextGs = {
+                                    ...prev,
+                                    activeAgreements: [...safeActive, newAgreement],
+                                    logs: [`PACTO: ${p?.name || 'Actor'} y ${(prev.players && prev.players[targetIdx]) ? prev.players[targetIdx].name : 'Actor'} firman: ${benefitText}`, ...safeLogs]
+                                  };
+                                  console.log("Creating Pact (Functional):", newAgreement);
+                                  updateRemote(nextGs);
+                                  return nextGs;
+                                });
+                                alert("Pacto formalizado. Revisa el Libro de Pactos.");
                               }}
                               className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
                               title="Formalizar Acuerdo"
@@ -8960,29 +8829,23 @@
       }
     }
 
-    function TabNegotiation({ gs, setGs, updateRemote }) {
+    function TabNegotiation({ gs }) {
       try {
         if (!gs) return null;
-
         const pastPacts = safeArray(gs?.pacts);
         const activeAgreements = safeArray(gs?.activeAgreements);
         const allPacts = [...activeAgreements, ...pastPacts];
-
-        console.log("LIBRO DE PACTOS - Render:", allPacts.length, allPacts);
-        const players = safeArray(gs?.players);
 
         return (
           <div className="animate-page space-y-8">
             <div className="text-center space-y-2">
               <h2 className="text-5xl font-extrabold tracking-tight uppercase">Libro de <span className="text-orange-500">Pactos</span></h2>
-              <p className="text-slate-500 font-medium">Registro histórico de compromisos, alianzas y prebendas legislativas.</p>
+              <p className="text-slate-500 font-medium">Registro histórico de compromisos y alianzas.</p>
             </div>
 
             {allPacts.length === 0 ? (
-              <div className="glass rounded-[3rem] p-16 text-center space-y-6 opacity-60">
-                <Icon name="shake" className="w-16 h-16 text-slate-700 mx-auto" />
-                <p className="text-slate-500 uppercase text-sm font-black tracking-widest">No hay pactos registrados ({allPacts.length})</p>
-                <div className="text-[10px] text-slate-800">Debug: Active={activeAgreements.length} | Past={pastPacts.length}</div>
+              <div className="glass rounded-[3rem] p-16 text-center opacity-60">
+                <p className="text-slate-500 uppercase text-sm font-black tracking-widest">No hay pactos registrados</p>
               </div>
             ) : (
               <div className="glass rounded-[2.5rem] overflow-hidden border border-white/10">
@@ -8993,45 +8856,18 @@
                       <th className="px-8 py-6">Beneficiario</th>
                       <th className="px-8 py-6">Compromiso</th>
                       <th className="px-8 py-6 text-center">Estado</th>
-                      <th className="px-4 py-6 text-center">T. Pacto</th>
-                      <th className="px-4 py-6 text-right">T. Resol.</th>
                     </tr>
                   </thead>
                   <tbody className="text-[14px]">
                     {allPacts.map((pact, i) => (
-                      <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors group">
-                        <td className="px-8 py-6 font-bold text-white">
-                          <div className="flex items-center space-x-3">
-                            <div className="w-2 h-8 rounded-full" style={{ backgroundColor: gs.players?.[pact.promisorIdx]?.color || '#ccc' }}></div>
-                            <span>{pact.promisorName}</span>
-                          </div>
-                        </td>
-                        <td className="px-8 py-6 text-slate-300">
-                          <div className="flex items-center space-x-3">
-                            <Icon name="user" className="w-4 h-4 opacity-30" />
-                            <span>{pact.beneficiaryName}</span>
-                          </div>
-                        </td>
-                        <td className="px-8 py-6">
-                          <div className="space-y-1">
-                            <span className="text-blue-400 font-bold block">{pact.detail}</span>
-                            <span className="text-[10px] text-slate-500 uppercase font-black">Turno {pact.turnCreated}</span>
-                          </div>
-                        </td>
+                      <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                        <td className="px-8 py-6 font-bold text-white">{pact.promisorName}</td>
+                        <td className="px-8 py-6 text-slate-300">{pact.beneficiaryName}</td>
+                        <td className="px-8 py-6 text-blue-400 font-bold">{pact.detail}</td>
                         <td className="px-8 py-6 text-center">
-                          <span className={`px-4 py-2 rounded-xl text-[12px] font-black uppercase tracking-widest border border-current bg-current/10 ${pact.status === 'Cumplido' ? 'text-emerald-400' :
-                            pact.status === 'Traicionado' ? 'text-red-500' :
-                              pact.status === 'Archivado' ? 'text-slate-400 opacity-70' :
-                                'text-orange-400 animate-pulse'
-                            }`}>
+                          <span className={`px-4 py-2 rounded-xl text-[12px] font-black uppercase tracking-widest border border-current bg-current/10 ${pact.status === 'Cumplido' ? 'text-emerald-400' : pact.status === 'Traicionado' ? 'text-red-500' : 'text-slate-400'}`}>
                             {pact.status}
                           </span>
-                        </td>
-                        <td className="px-4 py-6 text-center font-mono text-slate-500">
-                          #{pact.turnCreated}
-                        </td>
-                        <td className="px-4 py-6 text-right font-mono text-slate-300">
-                          {pact.turnResolved ? `#${pact.turnResolved}` : '--'}
                         </td>
                       </tr>
                     ))}
@@ -9039,32 +8875,29 @@
                 </table>
               </div>
             )}
+
+            <div className="pt-12 border-t border-white/5 opacity-20">
+              <details className="text-[10px] font-mono bg-black/40 p-4 rounded-xl">
+                <summary className="cursor-pointer">Logs de Sincronización</summary>
+                <p>Activos: {JSON.stringify(gs.activeAgreements || [])}</p>
+                <p>Histórico: {JSON.stringify(gs.pacts || [])}</p>
+              </details>
+            </div>
           </div>
         );
       } catch (err) {
-        return (
-          <div className="p-10 bg-red-900/50 text-white rounded-3xl">
-            <h3>Error en Pactos: {err.message}</h3>
-            <pre className="text-[10px]">{JSON.stringify(gs, null, 2)}</pre>
-          </div>
-        );
+        return <div className="p-10 bg-red-900 text-white">Error en Libro: {err.message}</div>;
       }
     }
 
     function TabLogs({ gs }) {
-      const logs = gs?.logs || [];
+      const logs = safeArray(gs?.logs);
       return (
         <div className="animate-page space-y-4 max-h-[750px] overflow-y-auto pr-6 custom-scrollbar">
           {logs.map((l, i) => (
-            <div key={i} className="glass p-8 rounded-[2rem] border-l-8 border-blue-500/30 flex space-x-6 items-center bg-gradient-to-r from-blue-500/5 to-transparent group hover:border-blue-500 transition-all">
-              <div className="text-blue-500/20 font-mono text-4xl group-hover:text-blue-500/40 transition-colors">#{logs.length - i}</div>
-              <div className="space-y-2 flex-grow">
-                <p className="text-slate-200 text-xl font-bold">{l}</p>
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] text-slate-600 uppercase font-bold tracking-widest">Publicado por la Secretaría General del Palacio</span>
-                  <span className="text-[10px] text-blue-500/50 font-mono">STAMP: {new Date().toLocaleTimeString()}</span>
-                </div>
-              </div>
+            <div key={i} className="glass p-8 rounded-[2rem] border-l-8 border-blue-500/30 flex space-x-6 items-center">
+              <div className="text-blue-500/20 font-mono text-4xl">#{logs.length - i}</div>
+              <p className="text-slate-200 text-xl font-bold">{l}</p>
             </div>
           ))}
         </div>
