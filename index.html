@@ -7293,39 +7293,7 @@
           const data = snapshot.val();
           console.log("Firebase Update:", data);
           if (data && data.gs) {
-            // Merge remote state with local state to prevent race conditions
-            setGs(prevGs => {
-              const remoteGs = data.gs;
-
-              // If no previous state, just use remote
-              if (!prevGs) return remoteGs;
-
-              // Merge activeAgreements: keep local ones not yet in remote
-              const remoteActiveIds = safeArray(remoteGs.activeAgreements).map(a => a?.id).filter(Boolean);
-              const localOnlyActive = safeArray(prevGs.activeAgreements).filter(a => a?.id && !remoteActiveIds.includes(a.id));
-              const mergedActiveAgreements = [...safeArray(remoteGs.activeAgreements), ...localOnlyActive];
-
-              // Merge pacts: combine and deduplicate by id
-              const remotePactIds = safeArray(remoteGs.pacts).map(p => p?.id).filter(Boolean);
-              const localOnlyPacts = safeArray(prevGs.pacts).filter(p => p?.id && !remotePactIds.includes(p.id));
-              const mergedPacts = [...safeArray(remoteGs.pacts), ...localOnlyPacts];
-
-              // Use remote timestamp if available, otherwise prefer remote data
-              const useRemote = !remoteGs.lastUpdated || !prevGs.lastUpdated || remoteGs.lastUpdated >= prevGs.lastUpdated;
-
-              const mergedGs = {
-                ...(useRemote ? remoteGs : prevGs),
-                activeAgreements: mergedActiveAgreements,
-                pacts: mergedPacts,
-                // Always take the most recent logs
-                logs: safeArray(remoteGs.logs).length >= safeArray(prevGs.logs).length
-                  ? safeArray(remoteGs.logs)
-                  : safeArray(prevGs.logs)
-              };
-
-              console.log("Firebase Merge: Active=", mergedActiveAgreements.length, "Pacts=", mergedPacts.length);
-              return mergedGs;
-            });
+            setGs(data.gs);
             if (data.phase) setPhase(data.phase);
           }
         };
@@ -7371,17 +7339,9 @@
           return newObj;
         };
 
-        // Add timestamp for conflict resolution
-        const gsWithTimestamp = {
-          ...newGs,
-          lastUpdated: Date.now()
-        };
-
-        const safeGs = sanitize(gsWithTimestamp);
+        const safeGs = sanitize(newGs);
         if (!safeGs) return; // Prevent corrupt updates
         const updateData = { gs: safeGs };
-
-        console.log("Sending to Firebase:", { activeAgreements: safeGs.activeAgreements?.length, pacts: safeGs.pacts?.length });
 
         if (newPhase) updateData.phase = newPhase;
         db.ref(`rooms/${roomCode}`).update(updateData).catch(err => {
@@ -8768,11 +8728,14 @@
                                 if (!targetSelect || !benefitSelect) return;
 
                                 const targetIdx = parseInt(targetSelect.value);
-                                if (isNaN(targetIdx)) {
-                                  alert("Debes seleccionar un destinatario para el pacto.");
+                                const actionIdx = parseInt(document.getElementById(`action-${pIdx}`)?.value);
+                                const benefitType = benefitSelect.value;
+
+                                if (isNaN(targetIdx) || isNaN(actionIdx) || !benefitType) {
+                                  alert("⚠️ Error: Debes seleccionar la ACCIÓN, el DESTINATARIO y el COMPROMISO para formalizar el pacto.");
                                   return;
                                 }
-                                const benefitType = benefitSelect.value;
+
                                 const benefitText = benefitSelect.options[benefitSelect.selectedIndex].text;
 
                                 const newAgreement = {
@@ -8781,6 +8744,7 @@
                                   promisorName: (gs.players && gs.players[targetIdx]) ? gs.players[targetIdx].name : `Actor ${targetIdx}`,
                                   beneficiaryIdx: pIdx,
                                   beneficiaryName: p?.name || `Actor ${pIdx}`,
+                                  actionIdx: actionIdx,
                                   type: benefitType,
                                   detail: benefitText,
                                   status: 'Pendiente',
@@ -8789,18 +8753,20 @@
                                 };
 
                                 setGs(prev => {
-                                  const safeActive = safeArray(prev.activeAgreements);
-                                  const safeLogs = safeArray(prev.logs);
+                                  const currentActive = safeArray(prev.activeAgreements);
+                                  const currentLogs = safeArray(prev.logs);
+
                                   const nextGs = {
                                     ...prev,
-                                    activeAgreements: [...safeActive, newAgreement],
-                                    logs: [`PACTO: ${p?.name || 'Actor'} y ${(prev.players && prev.players[targetIdx]) ? prev.players[targetIdx].name : 'Actor'} firman: ${benefitText}`, ...safeLogs]
+                                    activeAgreements: [...currentActive, newAgreement],
+                                    logs: [`PACTO: ${p?.name || 'Actor'} y ${newAgreement.promisorName} firman: ${benefitText}`, ...currentLogs]
                                   };
-                                  console.log("Creating Pact (Functional):", newAgreement);
-                                  updateRemote(nextGs);
+
+                                  // Sincronización inmediata
+                                  setTimeout(() => updateRemote(nextGs), 100);
                                   return nextGs;
                                 });
-                                alert("Pacto formalizado. Revisa el Libro de Pactos.");
+                                alert("✅ Pacto formalizado con éxito. Revisa el Libro de Pactos.");
                               }}
                               className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
                               title="Formalizar Acuerdo"
@@ -8872,8 +8838,8 @@
     function TabNegotiation({ gs }) {
       try {
         if (!gs) return null;
-        const pastPacts = safeArray(gs?.pacts);
-        const activeAgreements = safeArray(gs?.activeAgreements);
+        const pastPacts = safeArray(gs.pacts || []);
+        const activeAgreements = safeArray(gs.activeAgreements || []);
         const allPacts = [...activeAgreements, ...pastPacts];
 
         return (
@@ -8916,15 +8882,11 @@
               </div>
             )}
 
-            <div className="pt-8 border-t border-white/10">
-              <details className="text-[11px] font-mono bg-black/60 p-6 rounded-2xl border border-white/10" open>
-                <summary className="cursor-pointer text-slate-400 font-bold uppercase tracking-widest mb-4">🔍 Debug: Estado de Sincronización</summary>
-                <div className="space-y-2 text-slate-500">
-                  <p><span className="text-blue-400">Total mostrados:</span> {allPacts.length}</p>
-                  <p><span className="text-orange-400">Activos (raw):</span> {JSON.stringify(gs.activeAgreements)}</p>
-                  <p><span className="text-emerald-400">Histórico (raw):</span> {JSON.stringify(gs.pacts)}</p>
-                  <p><span className="text-purple-400">Last Updated:</span> {gs.lastUpdated ? new Date(gs.lastUpdated).toLocaleTimeString() : 'N/A'}</p>
-                </div>
+            <div className="pt-12 border-t border-white/5 opacity-20">
+              <details className="text-[10px] font-mono bg-black/40 p-4 rounded-xl">
+                <summary className="cursor-pointer">Logs de Sincronización</summary>
+                <p>Activos: {JSON.stringify(gs.activeAgreements || [])}</p>
+                <p>Histórico: {JSON.stringify(gs.pacts || [])}</p>
               </details>
             </div>
           </div>
