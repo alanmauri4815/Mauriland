@@ -7455,6 +7455,8 @@
           turn: 1,
           tension: 0,
           media: 5,
+          pacts: [],
+          activeAgreements: [],
           logs: ["Sala creada. Esperando actores..."]
         };
         setRoomCode(code); setIsHost(true); setPlayerId(0);
@@ -7509,6 +7511,8 @@
           tension: 0,
           media: 5,
           budget: 1000,
+          pacts: [],
+          activeAgreements: [],
           logs: ["Partidos asignados. El Palacio abre sus puertas."]
         };
         setGs(newGs);
@@ -7597,7 +7601,10 @@
         // Use negotiation switches if available, otherwise original votes
         const effectiveVotes = {};
         players.forEach((p, i) => {
-          effectiveVotes[i] = gs?.negotiationSwitches?.[i] ?? gs?.votes?.[i];
+          const sw = gs?.negotiationSwitches;
+          const vt = gs?.votes;
+          const val = (sw && sw[i] !== undefined) ? sw[i] : (sw && sw[String(i)] !== undefined ? sw[String(i)] : (vt && vt[i] !== undefined ? vt[i] : (vt ? vt[String(i)] : undefined)));
+          effectiveVotes[i] = val;
         });
 
         const tally = options.map(() => 0);
@@ -7606,7 +7613,7 @@
 
         players.forEach((p, i) => {
           if (!p) return;
-          const optIdx = effectiveVotes[i];
+          const optIdx = effectiveVotes[i] !== undefined ? effectiveVotes[i] : effectiveVotes[String(i)];
           const hasVoted = optIdx !== undefined && optIdx !== null;
 
           const loyalCount = Math.floor((p.seats || 0) * ((p.loyalty || 0) / 100));
@@ -7664,7 +7671,7 @@
             finalOptIdx = ranking[0].optIdx;
           } else if (isTie && topSeats >= threshold && topSeats > 0) {
             // Voto de Calidad del Presidente (Owner)
-            const ownerVote = effectiveVotes[gs?.ownerIdx];
+            const ownerVote = effectiveVotes[gs?.ownerIdx] !== undefined ? effectiveVotes[gs?.ownerIdx] : effectiveVotes[String(gs?.ownerIdx)];
             // Si el voto del dueño está entre los empatados en el top, desempata a su favor
             if (ownerVote !== undefined && ownerVote !== null && tiedOptions.includes(Number(ownerVote))) {
               finalOptIdx = Number(ownerVote);
@@ -7696,7 +7703,7 @@
 
         const winIdx = isDecree ? chosenOptIdx : finalOptIdx;
         const winOpt = (winIdx !== null && winIdx !== undefined) ? options[winIdx] : null;
-        const currentLogs = Array.isArray(gs?.logs) ? gs.logs : Object.values(gs?.logs || {});
+        const currentLogs = safeArray(gs?.logs);
         const logs = [isDecree ? `Decreto: ${winOpt?.text || "Desconocido"}` : `Aprobado: ${winOpt?.text || "Desconocido"}`, ...currentLogs];
 
         const lastResults = {
@@ -7722,7 +7729,7 @@
           const pImpact = winOpt?.party?.[p.party] || 0;
           const newAp = Math.max(0, Math.min(100, (p.ap || 50) + pImpact));
 
-          const myVoteIdx = effectiveVotes[i];
+          const myVoteIdx = effectiveVotes[i] !== undefined ? effectiveVotes[i] : effectiveVotes[String(i)];
           const myVoteImpact = (winOpt && myVoteIdx !== undefined) ? (options[myVoteIdx]?.party?.[p.party] || 0) : 0;
           const bestPossibleImpact = winOpt ? Math.max(...options.map(o => o.party?.[p.party] || 0)) : 0;
 
@@ -7763,8 +7770,8 @@
 
         safeActive.forEach(a => {
           if (!a) return;
-          const promisorVote = effectiveVotes[a.promisorIdx];
-          const promisedOpt = gs.negotiationSwitches?.[a.promisorIdx];
+          const promisorVote = effectiveVotes[a.promisorIdx] !== undefined ? effectiveVotes[a.promisorIdx] : effectiveVotes[String(a.promisorIdx)];
+          const promisedOpt = (gs.negotiationSwitches && gs.negotiationSwitches[a.promisorIdx] !== undefined) ? gs.negotiationSwitches[a.promisorIdx] : (gs.negotiationSwitches ? gs.negotiationSwitches[String(a.promisorIdx)] : undefined);
           let status = 'Cumplido';
 
           if (promisedOpt !== undefined && promisorVote != promisedOpt) {
@@ -8693,9 +8700,12 @@
                               showResults: false,
                               negotiating: true,
                               isAiProcessing: false,
-                              activeAgreements: Array.isArray(gs.activeAgreements) ? gs.activeAgreements : Object.values(gs.activeAgreements || {}),
-                              negotiationSwitches: gs.negotiationSwitches || {}
+                              activeAgreements: safeArray(gs.activeAgreements),
+                              pacts: safeArray(gs.pacts),
+                              negotiationSwitches: gs.negotiationSwitches || {},
+                              votes: gs.votes || {}
                             };
+                            console.log("Opening Negotiation Table:", newGs);
                             setGs(newGs);
                             updateRemote(newGs);
                           }} className="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-6 rounded-3xl uppercase text-sm tracking-widest">Abrir Mesa de Negociación</button>
@@ -8869,8 +8879,8 @@
                                   turnResolved: null
                                 };
 
-                                const safeActive = Array.isArray(gs.activeAgreements) ? gs.activeAgreements : Object.values(gs.activeAgreements || {});
-                                const safeLogs = Array.isArray(gs.logs) ? gs.logs : Object.values(gs.logs || {});
+                                const safeActive = safeArray(gs.activeAgreements);
+                                const safeLogs = safeArray(gs.logs);
 
                                 const newGs = {
                                   ...gs,
