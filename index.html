@@ -8775,77 +8775,77 @@
                                 };
 
                                 // Sincronización Independiente (V2) usando PUSH
+                                const roomCode = sessionStorage.getItem('mauriland_room');
                                 if (roomCode) {
-                                  // 1. Guardar pacto en rama independiente (A prueba de borrados)
+                                  const db = firebase.database();
                                   db.ref(`rooms/${roomCode}/pacts_v2`).push(newAgreement);
-
-                                  // 2. Solo actualizar logs en el estado global
-                                  const updatedLogs = [`PACTO: ${p?.name || 'Actor'} y ${newAgreement.promisorName} firman: ${benefitText}`, ...safeArray(prev.logs)];
-                                  db.ref(`rooms/${roomCode}/gs/logs`).set(updatedLogs);
                                 }
 
-                                return {
-                                  ...prev,
-                                  logs: [`PACTO: ${p?.name || 'Actor'} y ${newAgreement.promisorName} firman: ${benefitText}`, ...safeArray(prev.logs)]
-                                };
-                              });
-                            alert("✅ Pacto formalizado con éxito. Revisa el Libro de Pactos.");
+                                setGs(prev => {
+                                  const updatedLogs = [`PACTO: ${p?.name || 'Actor'} y ${newAgreement.promisorName} firman: ${benefitText}`, ...safeArray(prev.logs)];
+                                  if (roomCode) {
+                                    firebase.database().ref(`rooms/${roomCode}/gs/logs`).set(updatedLogs);
+                                  }
+                                  return { ...prev, logs: updatedLogs };
+                                });
+
+                                alert("✅ Pacto formalizado con éxito. Revisa el Libro de Pactos.");
                               }}
-                            className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
-                            title="Formalizar Acuerdo"
+                              className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
+                              title="Formalizar Acuerdo"
                             >
-                            <Icon name="law" className="w-5 h-5 group-hover:rotate-12 transition-transform" />
-                            <span className="text-[11px] font-black uppercase tracking-widest">Pactar</span>
-                          </button>
+                              <Icon name="law" className="w-5 h-5 group-hover:rotate-12 transition-transform" />
+                              <span className="text-[11px] font-black uppercase tracking-widest">Pactar</span>
+                            </button>
                           </div>
-                    );
+                        );
                       })}
-                  </div>
+                    </div>
                   </div>
                 )}
 
-              {/* Botonera Final */}
-              {gs.negotiating && (
-                <div className="mt-8 pt-6 border-t border-white/5 flex justify-between items-center">
-                  <div className="text-[13px] uppercase font-bold text-slate-500">
-                    Acuerdos Pendientes: <span className="text-white">{safeAgreements.length}</span>
-                  </div>
-                  <div className="flex space-x-4">
-                    <button onClick={() => {
-                      const activeAgreements = safeArray(gs.activeAgreements);
-                      const archivedPacts = activeAgreements.map(a => ({ ...a, status: 'Archivado', turnResolved: gs.turn }));
-                      const existingPacts = safeArray(gs.pacts);
+                {/* Botonera Final */}
+                {gs.negotiating && (
+                  <div className="mt-8 pt-6 border-t border-white/5 flex justify-between items-center">
+                    <div className="text-[13px] uppercase font-bold text-slate-500">
+                      Acuerdos Pendientes: <span className="text-white">{safeAgreements.length}</span>
+                    </div>
+                    <div className="flex space-x-4">
+                      <button onClick={() => {
+                        const activeAgreements = safeArray(gs.activeAgreements);
+                        const archivedPacts = activeAgreements.map(a => ({ ...a, status: 'Archivado', turnResolved: gs.turn }));
+                        const existingPacts = safeArray(gs.pacts);
 
-                      const newGs = {
-                        ...gs,
-                        negotiating: false,
-                        curSit: null,
-                        pacts: [...existingPacts, ...archivedPacts].filter(Boolean),
-                        activeAgreements: [],
-                        logs: ["Moción retirada y pactos archivados.", ...safeArray(gs.logs)]
-                      };
-                      setGs(newGs);
-                      updateRemote(newGs);
-                    }} className="px-6 py-3 rounded-2xl text-[13px] font-bold uppercase text-red-500 hover:bg-red-500/10 transition-colors">
-                      Retirar
-                    </button>
-                    {isHost ? (
-                      <button
-                        onClick={() => finalizeVote()}
-                        className="bg-emerald-500 hover:bg-emerald-400 text-white font-black px-8 py-3 rounded-2xl shadow-lg shadow-emerald-500/20 uppercase text-[13px] tracking-widest transition-all"
-                      >
-                        Someter a Votación Final
+                        const newGs = {
+                          ...gs,
+                          negotiating: false,
+                          curSit: null,
+                          pacts: [...existingPacts, ...archivedPacts].filter(Boolean),
+                          activeAgreements: [],
+                          logs: ["Moción retirada y pactos archivados.", ...safeArray(gs.logs)]
+                        };
+                        setGs(newGs);
+                        updateRemote(newGs);
+                      }} className="px-6 py-3 rounded-2xl text-[13px] font-bold uppercase text-red-500 hover:bg-red-500/10 transition-colors">
+                        Retirar
                       </button>
-                    ) : (
-                      <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-6 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest italic">
-                        Esperando Votación Final (Anfitrión)
-                      </div>
-                    )}
+                      {isHost ? (
+                        <button
+                          onClick={() => finalizeVote()}
+                          className="bg-emerald-500 hover:bg-emerald-400 text-white font-black px-8 py-3 rounded-2xl shadow-lg shadow-emerald-500/20 uppercase text-[13px] tracking-widest transition-all"
+                        >
+                          Someter a Votación Final
+                        </button>
+                      ) : (
+                        <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-6 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest italic">
+                          Esperando Votación Final (Anfitrión)
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          </div>
           </div >
         );
       } catch (err) {
@@ -8927,14 +8927,87 @@
 
     function TabLogs({ gs }) {
       const logs = safeArray(gs?.logs);
+      const activePacts = safeArray(gs?.activeAgreements || []);
+
+      const registerManualPact = () => {
+        const promisor = prompt("Nombre del Promitente (quien promete):");
+        const beneficiary = prompt("Nombre del Beneficiario (quien recibe):");
+        const commitment = prompt("Detalle del Compromiso:");
+
+        if (promisor && beneficiary && commitment) {
+          const newPact = {
+            id: 'manual-' + Math.random().toString(36).substr(2, 5),
+            promisorName: promisor,
+            beneficiaryName: beneficiary,
+            detail: commitment,
+            status: 'Pendiente',
+            turnCreated: gs.turn,
+            isManual: true
+          };
+
+          // Guardar en Firebase V2 independiente
+          const roomCode = sessionStorage.getItem('mauriland_room');
+          if (roomCode) {
+            const db = firebase.database();
+            db.ref(`rooms/${roomCode}/pacts_v2`).push(newPact);
+
+            // Actualizar logs
+            const updatedLogs = [`ACTA DE PACTO: ${promisor} se compromete con ${beneficiary}: ${commitment}`, ...logs];
+            db.ref(`rooms/${roomCode}/gs/logs`).set(updatedLogs);
+            alert("Pacto registrado en el Acta Oficial.");
+          }
+        }
+      };
+
       return (
-        <div className="animate-page space-y-4 max-h-[750px] overflow-y-auto pr-6 custom-scrollbar">
-          {logs.map((l, i) => (
-            <div key={i} className="glass p-8 rounded-[2rem] border-l-8 border-blue-500/30 flex space-x-6 items-center">
-              <div className="text-blue-500/20 font-mono text-4xl">#{logs.length - i}</div>
-              <p className="text-slate-200 text-xl font-bold">{l}</p>
+        <div className="animate-page space-y-8 max-h-[85vh] overflow-y-auto pr-6 custom-scrollbar">
+          {/* Sección de Pactos Activos (Parche de Visibilidad) */}
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <h3 className="text-xl font-black uppercase tracking-widest text-orange-500">Pactos Activos (Registro de Acta)</h3>
+              <button
+                onClick={registerManualPact}
+                className="bg-orange-600 hover:bg-orange-500 text-white text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded-xl transition-all shadow-lg shadow-orange-900/20"
+              >
+                + Registrar Pacto Manual
+              </button>
             </div>
-          ))}
+
+            {activePacts.length === 0 ? (
+              <div className="glass p-6 rounded-2xl border border-white/5 text-center opacity-40">
+                <span className="text-[10px] font-bold uppercase tracking-widest">No hay pactos activos en esta sesión</span>
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                {activePacts.map((p, idx) => (
+                  <div key={idx} className="glass p-5 rounded-2xl border-l-4 border-orange-500 flex justify-between items-center animate-slide-in">
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <span className="font-black text-white">{p.promisorName}</span>
+                        <Icon name="law" className="w-3 h-3 text-slate-500" />
+                        <span className="font-black text-slate-400">{p.beneficiaryName}</span>
+                      </div>
+                      <p className="text-sm text-blue-400 font-bold mt-1">{p.detail}</p>
+                    </div>
+                    <div className="text-right">
+                      <span className="block text-[9px] font-black uppercase text-slate-500 tracking-tighter">Estado</span>
+                      <span className="text-[10px] font-black text-orange-400 border border-orange-500/30 px-2 py-1 rounded-lg uppercase bg-orange-500/5">{p.status}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-white/10 pt-8 space-y-4">
+            <h3 className="text-xl font-black uppercase tracking-widest text-blue-500">Historial de Actas</h3>
+            {logs.map((l, i) => (
+              <div key={i} className="glass p-8 rounded-[2rem] border-l-8 border-blue-500/30 flex space-x-6 items-center">
+                <div className="text-blue-500/20 font-mono text-4xl">#{logs.length - i}</div>
+                <p className="text-slate-200 text-xl font-bold">{l}</p>
+              </div>
+            ))}
+          </div>
         </div>
       );
     }
@@ -8949,4 +9022,3 @@
 </body>
 
 </html>
-```
