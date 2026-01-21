@@ -7217,6 +7217,12 @@
     }
     const db = firebase.database();
 
+    const safeArray = (val) => {
+      if (!val) return [];
+      if (Array.isArray(val)) return val.filter(Boolean);
+      return Object.values(val).filter(Boolean);
+    };
+
     function App() {
       const [phase, setPhase] = useState('lobby'); // lobby, setup, setup-details, assignment, playing
       const [tab, setTab] = useState('dashboard');
@@ -7448,12 +7454,6 @@
         setRoomCode(code); setIsHost(true); setPlayerId(0);
         db.ref(`rooms/${code}`).set({ gs: initialGs, phase: 'setup' });
         setPhase('setup');
-      };
-
-      const safeArray = (val) => {
-        if (!val) return [];
-        if (Array.isArray(val)) return val.filter(Boolean);
-        return Object.values(val).filter(Boolean);
       };
 
       const joinRoom = (code) => {
@@ -8312,7 +8312,7 @@
     }
 
     function TabPlayers({ gs }) {
-      const players = gs?.players || [];
+      const players = safeArray(gs?.players);
       const leaderOP = [...players].sort((a, b) => (b.op || 0) - (a.op || 0))[0];
       const leaderAP = [...players].sort((a, b) => (b.ap || 0) - (a.ap || 0))[0];
 
@@ -8946,12 +8946,6 @@
     function TabNegotiation({ gs, setGs, updateRemote }) {
       try {
         if (!gs) return null;
-
-        const safeArray = (val) => {
-          if (!val) return [];
-          if (Array.isArray(val)) return val.filter(Boolean);
-          return Object.values(val).filter(Boolean);
-        };
 
         const pastPacts = safeArray(gs?.pacts);
         const activeAgreements = safeArray(gs?.activeAgreements);
