@@ -107,11 +107,17 @@
 
     const { useState, useEffect, useMemo, useRef } = React;
 
-    const safeArray = (val) => {
+    function safeArray(val) {
       if (!val) return [];
       if (Array.isArray(val)) return val.filter(Boolean);
-      return Object.values(val).filter(Boolean);
-    };
+      try {
+        return Object.values(val || {}).filter(Boolean);
+      } catch (e) {
+        return [];
+      }
+    }
+    window.safeArray = safeArray; // Extra safety for global scope access
+
 
     class ErrorBoundary extends React.Component {
       constructor(props) {
@@ -8365,7 +8371,7 @@
                     </tr>
                   </thead>
                   <tbody className="text-[14px] font-medium">
-                    {(gs?.players || []).map((p, i) => (
+                    {safeArray(gs?.players).map((p, i) => (
                       <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                         <td className="px-6 py-4 text-slate-500 font-mono">{i + 1}</td>
                         <td className="px-6 py-4 font-bold text-white">{p.name}</td>
@@ -8423,8 +8429,9 @@
                   <Icon name="law" className="w-4 h-4" />
                 </h3>
                 <div className="space-y-3 max-h-[500px] overflow-y-auto px-2 custom-scrollbar">
-                  {(gs?.sectors || []).map((s, i) => {
-                    const totalWeight = (gs?.sectors || []).reduce((acc, curr) => acc + (curr?.weight || 0), 0);
+                  {safeArray(gs?.sectors).map((s, i) => {
+                    const sectors = safeArray(gs?.sectors);
+                    const totalWeight = sectors.reduce((acc, curr) => acc + (curr?.weight || 0), 0);
                     const percentage = totalWeight > 0 ? (((s?.weight || 0) / totalWeight) * 100).toFixed(1) : 0;
                     return (
                       <div key={i} className="flex justify-between items-center text-[13px] group py-1 border-b border-white/5 last:border-0">
