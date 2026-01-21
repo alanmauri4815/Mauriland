@@ -7293,7 +7293,39 @@
           const data = snapshot.val();
           console.log("Firebase Update:", data);
           if (data && data.gs) {
-            setGs(data.gs);
+            // Merge remote state with local state to prevent race conditions
+            setGs(prevGs => {
+              const remoteGs = data.gs;
+
+              // If no previous state, just use remote
+              if (!prevGs) return remoteGs;
+
+              // Merge activeAgreements: keep local ones not yet in remote
+              const remoteActiveIds = safeArray(remoteGs.activeAgreements).map(a => a?.id).filter(Boolean);
+              const localOnlyActive = safeArray(prevGs.activeAgreements).filter(a => a?.id && !remoteActiveIds.includes(a.id));
+              const mergedActiveAgreements = [...safeArray(remoteGs.activeAgreements), ...localOnlyActive];
+
+              // Merge pacts: combine and deduplicate by id
+              const remotePactIds = safeArray(remoteGs.pacts).map(p => p?.id).filter(Boolean);
+              const localOnlyPacts = safeArray(prevGs.pacts).filter(p => p?.id && !remotePactIds.includes(p.id));
+              const mergedPacts = [...safeArray(remoteGs.pacts), ...localOnlyPacts];
+
+              // Use remote timestamp if available, otherwise prefer remote data
+              const useRemote = !remoteGs.lastUpdated || !prevGs.lastUpdated || remoteGs.lastUpdated >= prevGs.lastUpdated;
+
+              const mergedGs = {
+                ...(useRemote ? remoteGs : prevGs),
+                activeAgreements: mergedActiveAgreements,
+                pacts: mergedPacts,
+                // Always take the most recent logs
+                logs: safeArray(remoteGs.logs).length >= safeArray(prevGs.logs).length
+                  ? safeArray(remoteGs.logs)
+                  : safeArray(prevGs.logs)
+              };
+
+              console.log("Firebase Merge: Active=", mergedActiveAgreements.length, "Pacts=", mergedPacts.length);
+              return mergedGs;
+            });
             if (data.phase) setPhase(data.phase);
           }
         };
@@ -7339,9 +7371,17 @@
           return newObj;
         };
 
-        const safeGs = sanitize(newGs);
+        // Add timestamp for conflict resolution
+        const gsWithTimestamp = {
+          ...newGs,
+          lastUpdated: Date.now()
+        };
+
+        const safeGs = sanitize(gsWithTimestamp);
         if (!safeGs) return; // Prevent corrupt updates
         const updateData = { gs: safeGs };
+
+        console.log("Sending to Firebase:", { activeAgreements: safeGs.activeAgreements?.length, pacts: safeGs.pacts?.length });
 
         if (newPhase) updateData.phase = newPhase;
         db.ref(`rooms/${roomCode}`).update(updateData).catch(err => {
@@ -8876,11 +8916,15 @@
               </div>
             )}
 
-            <div className="pt-12 border-t border-white/5 opacity-20">
-              <details className="text-[10px] font-mono bg-black/40 p-4 rounded-xl">
-                <summary className="cursor-pointer">Logs de Sincronización</summary>
-                <p>Activos: {JSON.stringify(gs.activeAgreements || [])}</p>
-                <p>Histórico: {JSON.stringify(gs.pacts || [])}</p>
+            <div className="pt-8 border-t border-white/10">
+              <details className="text-[11px] font-mono bg-black/60 p-6 rounded-2xl border border-white/10" open>
+                <summary className="cursor-pointer text-slate-400 font-bold uppercase tracking-widest mb-4">🔍 Debug: Estado de Sincronización</summary>
+                <div className="space-y-2 text-slate-500">
+                  <p><span className="text-blue-400">Total mostrados:</span> {allPacts.length}</p>
+                  <p><span className="text-orange-400">Activos (raw):</span> {JSON.stringify(gs.activeAgreements)}</p>
+                  <p><span className="text-emerald-400">Histórico (raw):</span> {JSON.stringify(gs.pacts)}</p>
+                  <p><span className="text-purple-400">Last Updated:</span> {gs.lastUpdated ? new Date(gs.lastUpdated).toLocaleTimeString() : 'N/A'}</p>
+                </div>
               </details>
             </div>
           </div>
