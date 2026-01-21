@@ -7299,7 +7299,28 @@
         };
 
         roomRef.on('value', handleUpdate);
-        return () => roomRef.off('value', handleUpdate);
+
+        // --- Suscripción Independiente de Pactos (V2) ---
+        const pactsRef = db.ref(`rooms/${roomCode}/pacts_v2`);
+        pactsRef.on('value', (snapshot) => {
+          const data = snapshot.val();
+          if (data) {
+            // Convertir objeto de Firebase a array de forma segura
+            const pactsArray = Object.keys(data).map(key => ({
+              ...data[key],
+              firebaseKey: key
+            }));
+            setGs(prev => ({ ...prev, activeAgreements: pactsArray }));
+            console.log("Pactos V2 Sincronizados:", pactsArray.length);
+          } else {
+            setGs(prev => ({ ...prev, activeAgreements: [] }));
+          }
+        });
+
+        return () => {
+          roomRef.off('value', handleUpdate);
+          pactsRef.off('value');
+        };
       }, [roomCode]);
 
       // Persistence to survive reloads
@@ -8753,85 +8774,79 @@
                                   turnResolved: null
                                 };
 
-                                setGs(prev => {
-                                  const currentActive = safeArray(prev.activeAgreements);
-                                  const currentLogs = safeArray(prev.logs);
-                                  const updatedActive = [...currentActive, newAgreement];
-                                  const updatedLogs = [`PACTO: ${p?.name || 'Actor'} y ${newAgreement.promisorName} firman: ${benefitText}`, ...currentLogs];
+                                // Sincronización Independiente (V2) usando PUSH
+                                if (roomCode) {
+                                  // 1. Guardar pacto en rama independiente (A prueba de borrados)
+                                  db.ref(`rooms/${roomCode}/pacts_v2`).push(newAgreement);
 
-                                  // Sincronización parcial ATÓMICA en Firebase
-                                  if (roomCode) {
-                                    const gsRef = db.ref(`rooms/${roomCode}/gs`);
-                                    gsRef.update({
-                                      activeAgreements: updatedActive,
-                                      logs: updatedLogs
-                                    }).catch(e => console.error("Error en sincronización parcial:", e));
-                                  }
+                                  // 2. Solo actualizar logs en el estado global
+                                  const updatedLogs = [`PACTO: ${p?.name || 'Actor'} y ${newAgreement.promisorName} firman: ${benefitText}`, ...safeArray(prev.logs)];
+                                  db.ref(`rooms/${roomCode}/gs/logs`).set(updatedLogs);
+                                }
 
-                                  return {
-                                    ...prev,
-                                    activeAgreements: updatedActive,
-                                    logs: updatedLogs
-                                  };
-                                });
-                                alert("✅ Pacto formalizado con éxito. Revisa el Libro de Pactos.");
+                                return {
+                                  ...prev,
+                                  logs: [`PACTO: ${p?.name || 'Actor'} y ${newAgreement.promisorName} firman: ${benefitText}`, ...safeArray(prev.logs)]
+                                };
+                              });
+                            alert("✅ Pacto formalizado con éxito. Revisa el Libro de Pactos.");
                               }}
-                              className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
-                              title="Formalizar Acuerdo"
+                            className="bg-blue-600/20 border border-blue-500/30 text-blue-400 px-4 py-2 rounded-xl hover:bg-blue-600 hover:text-white transition-all flex items-center space-x-2 group"
+                            title="Formalizar Acuerdo"
                             >
-                              <Icon name="law" className="w-5 h-5 group-hover:rotate-12 transition-transform" />
-                              <span className="text-[11px] font-black uppercase tracking-widest">Pactar</span>
-                            </button>
+                            <Icon name="law" className="w-5 h-5 group-hover:rotate-12 transition-transform" />
+                            <span className="text-[11px] font-black uppercase tracking-widest">Pactar</span>
+                          </button>
                           </div>
-                        );
+                    );
                       })}
-                    </div>
+                  </div>
                   </div>
                 )}
 
-                {/* Botonera Final */}
-                {gs.negotiating && (
-                  <div className="mt-8 pt-6 border-t border-white/5 flex justify-between items-center">
-                    <div className="text-[13px] uppercase font-bold text-slate-500">
-                      Acuerdos Pendientes: <span className="text-white">{safeAgreements.length}</span>
-                    </div>
-                    <div className="flex space-x-4">
-                      <button onClick={() => {
-                        const activeAgreements = safeArray(gs.activeAgreements);
-                        const archivedPacts = activeAgreements.map(a => ({ ...a, status: 'Archivado', turnResolved: gs.turn }));
-                        const existingPacts = safeArray(gs.pacts);
+              {/* Botonera Final */}
+              {gs.negotiating && (
+                <div className="mt-8 pt-6 border-t border-white/5 flex justify-between items-center">
+                  <div className="text-[13px] uppercase font-bold text-slate-500">
+                    Acuerdos Pendientes: <span className="text-white">{safeAgreements.length}</span>
+                  </div>
+                  <div className="flex space-x-4">
+                    <button onClick={() => {
+                      const activeAgreements = safeArray(gs.activeAgreements);
+                      const archivedPacts = activeAgreements.map(a => ({ ...a, status: 'Archivado', turnResolved: gs.turn }));
+                      const existingPacts = safeArray(gs.pacts);
 
-                        const newGs = {
-                          ...gs,
-                          negotiating: false,
-                          curSit: null,
-                          pacts: [...existingPacts, ...archivedPacts].filter(Boolean),
-                          activeAgreements: [],
-                          logs: ["Moción retirada y pactos archivados.", ...safeArray(gs.logs)]
-                        };
-                        setGs(newGs);
-                        updateRemote(newGs);
-                      }} className="px-6 py-3 rounded-2xl text-[13px] font-bold uppercase text-red-500 hover:bg-red-500/10 transition-colors">
-                        Retirar
+                      const newGs = {
+                        ...gs,
+                        negotiating: false,
+                        curSit: null,
+                        pacts: [...existingPacts, ...archivedPacts].filter(Boolean),
+                        activeAgreements: [],
+                        logs: ["Moción retirada y pactos archivados.", ...safeArray(gs.logs)]
+                      };
+                      setGs(newGs);
+                      updateRemote(newGs);
+                    }} className="px-6 py-3 rounded-2xl text-[13px] font-bold uppercase text-red-500 hover:bg-red-500/10 transition-colors">
+                      Retirar
+                    </button>
+                    {isHost ? (
+                      <button
+                        onClick={() => finalizeVote()}
+                        className="bg-emerald-500 hover:bg-emerald-400 text-white font-black px-8 py-3 rounded-2xl shadow-lg shadow-emerald-500/20 uppercase text-[13px] tracking-widest transition-all"
+                      >
+                        Someter a Votación Final
                       </button>
-                      {isHost ? (
-                        <button
-                          onClick={() => finalizeVote()}
-                          className="bg-emerald-500 hover:bg-emerald-400 text-white font-black px-8 py-3 rounded-2xl shadow-lg shadow-emerald-500/20 uppercase text-[13px] tracking-widest transition-all"
-                        >
-                          Someter a Votación Final
-                        </button>
-                      ) : (
-                        <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-6 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest italic">
-                          Esperando Votación Final (Anfitrión)
-                        </div>
-                      )}
-                    </div>
+                    ) : (
+                      <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-6 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest italic">
+                        Esperando Votación Final (Anfitrión)
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </div>
+          </div >
         );
       } catch (err) {
         return (
